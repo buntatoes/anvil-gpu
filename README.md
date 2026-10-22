@@ -1,0 +1,73 @@
+# flux-gpu
+
+[![Release](https://img.shields.io/badge/release-v.01-e8c37a)](https://github.com/buntatoes/flux-gpu/releases/tag/v.01)
+[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](./LICENSE)
+[![Edition](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://github.com/buntatoes/flux-gpu)
+
+`flux-gpu` is a standalone 2D quad compositor library written in **Rust** and **HLSL Shader Model 5.0** ([`shaders/compositor.hlsl`](./shaders/compositor.hlsl)).
+
+---
+
+## Features
+
+- **Signed-Distance-Field (SDF) Quad Primitives (`GpuQuad`)**:
+  - Solid fills, textured quads, anti-aliased rounded corners (`corner_radius`), borders (`border_width`, `border_color`), and per-quad scissor clip rectangles.
+- **Shelf-Packing RGBA Texture Atlas (`TextureAtlas`)**:
+  - Packs decoded RGBA images and glyph bitmaps into a single GPU-ready texture sheet and computes normalized `[u0, v0, u1, v1]` UV coordinates.
+- **Embedded HLSL Shader (`COMPOSITOR_HLSL` / `shaders/compositor.hlsl`)**:
+  - Direct3D 11/12 vertex (`VSMain`) and pixel (`PSMain`) shaders evaluating `SdfRoundedBox` coverage, border blending, scissor clipping, and atlas texture modulation.
+- **Matching Software SDF Compositor (`render_frame_rgba`)**:
+  - Evaluates the exact same SDF rounded-rectangle, border, clipping, and texture sampling pipeline into a CPU RGBA8888 framebuffer for headless testing and fallback rendering.
+
+---
+
+## Quick Start
+
+```rust
+use flux_gpu::{GpuColor, GpuQuad, GpuRect, render_frame_rgba};
+
+let card = GpuQuad::solid(
+    GpuRect::new(10.0, 10.0, 120.0, 60.0),
+    GpuColor::rgba(37, 34, 30, 255),
+)
+.with_rounded_border(8.0, 2.0, GpuColor::rgba(232, 195, 122, 255));
+
+let framebuffer = render_frame_rgba(
+    140,
+    80,
+    GpuColor::rgba(28, 26, 23, 255),
+    &[card],
+    None,
+);
+assert_eq!(framebuffer.len(), 140 * 80 * 4);
+```
+
+---
+
+## API Overview
+
+| Type / Function | Description |
+| :--- | :--- |
+| `COMPOSITOR_HLSL: &str` | Embedded HLSL Shader Model 5.0 vertex and pixel shader source. |
+| `GpuQuad` | 2D quad primitive with `rect`, `clip`, `fill_color`, `border_color`, `corner_radius`, `border_width`, and `uv_rect`. |
+| `TextureAtlas` | Shelf-packing RGBA8888 texture atlas (`allocate`, `uv_bounds`, `sample_uv`). |
+| `sdf_rounded_box(rel_x, rel_y, half_w, half_h, radius) -> f32` | Signed distance function for a 2D box with rounded corners. |
+| `render_frame_rgba(width, height, clear, quads, atlas) -> Vec<u8>` | Renders a slice of `GpuQuad` primitives into an RGBA8888 framebuffer. |
+
+---
+
+## Building and Testing
+
+```powershell
+cargo test
+```
+
+---
+
+## License
+
+Licensed under the Mozilla Public License Version 2.0 ([`MPL-2.0`](./LICENSE)).
+
+## Author
+
+**Buntos**
