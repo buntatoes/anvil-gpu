@@ -5,6 +5,7 @@
     <a href="https://github.com/buntatoes/flux-gpu/releases/tag/v.04"><img src="https://img.shields.io/badge/release-v.04-e8c37a?style=flat-square" alt="Release v.04" /></a>
     <img src="https://img.shields.io/badge/status-Proof_of_Concept_(PoC)-d4a359?style=flat-square" alt="Proof of Concept" />
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MPL--2.0-blue?style=flat-square" alt="License MPL-2.0" /></a>
+    <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-policy-2ea44f?style=flat-square" alt="Security Policy" /></a>
     <a href="https://github.com/buntatoes/flux-gpu"><img src="https://img.shields.io/badge/rust-2024_edition-orange?style=flat-square" alt="Rust 2024 Edition" /></a>
   </p>
 </div>
