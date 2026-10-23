@@ -1,10 +1,10 @@
 # flux-gpu
 
-[![Release](https://img.shields.io/badge/release-v.02-e8c37a)](https://github.com/buntatoes/flux-gpu/releases/tag/v.02)
+[![Release](https://img.shields.io/badge/release-v.03-e8c37a)](https://github.com/buntatoes/flux-gpu/releases/tag/v.03)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](./LICENSE)
 [![Edition](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://github.com/buntatoes/flux-gpu)
 
-`flux-gpu` is a standalone 2D quad compositor library written in **Rust** and **HLSL Shader Model 5.0** ([`shaders/compositor.hlsl`](./shaders/compositor.hlsl)).
+`flux-gpu` is a standalone 2D quad compositor library written in **Rust**, **HLSL Shader Model 5.0** ([`shaders/compositor.hlsl`](./shaders/compositor.hlsl) for Windows Direct3D), and **GLSL 330 Core** ([`shaders/compositor.glsl`](./shaders/compositor.glsl) for Linux / cross-platform OpenGL & Vulkan).
 
 ---
 
@@ -14,8 +14,8 @@
   - Solid fills (`GpuQuad::solid`), linear gradients at arbitrary angles (`GpuQuad::linear_gradient`), soft SDF box shadows (`GpuQuad::box_shadow`), textured quads, anti-aliased rounded corners (`corner_radius`), borders (`border_width`, `border_color`), and per-quad scissor clip rectangles.
 - **Shelf-Packing RGBA Texture Atlas (`TextureAtlas`)**:
   - Packs decoded RGBA images and glyph bitmaps into a single GPU-ready texture sheet and computes normalized `[u0, v0, u1, v1]` UV coordinates.
-- **Embedded HLSL Shader (`COMPOSITOR_HLSL` / `shaders/compositor.hlsl`)**:
-  - Direct3D 11/12 vertex (`VSMain`) and pixel (`PSMain`) shaders evaluating `SdfRoundedBox` coverage, `SdfBoxShadowAlpha` smoothstep shadow falloff, `EvaluateLinearGradient` color ramps, border blending, scissor clipping, and atlas texture modulation.
+- **Cross-Platform Embedded Shaders (`COMPOSITOR_HLSL` & `COMPOSITOR_GLSL`)**:
+  - Direct3D 11/12 HLSL (`shaders/compositor.hlsl`) and OpenGL 3.3 Core / Vulkan GLSL (`shaders/compositor.glsl`) vertex and fragment shaders evaluating `SdfRoundedBox` coverage, `SdfBoxShadowAlpha` smoothstep shadow falloff, `EvaluateLinearGradient` color ramps, border blending, scissor clipping, and atlas texture modulation.
 - **Matching Software SDF Compositor (`render_frame_rgba`)**:
   - Evaluates the exact same SDF rounded-rectangle, linear gradient, box shadow, border, clipping, and texture sampling pipeline into a CPU RGBA8888 framebuffer for headless testing and fallback rendering.
 
@@ -59,7 +59,8 @@ assert_eq!(framebuffer.len(), 140 * 80 * 4);
 
 | Type / Function | Description |
 | :--- | :--- |
-| `COMPOSITOR_HLSL: &str` | Embedded HLSL Shader Model 5.0 vertex and pixel shader source. |
+| `COMPOSITOR_HLSL: &str` | Embedded HLSL Shader Model 5.0 vertex and pixel shader source (Windows Direct3D). |
+| `COMPOSITOR_GLSL: &str` | Embedded GLSL 330 Core vertex and fragment shader source (Linux OpenGL / Vulkan). |
 | `GpuQuad` | 2D quad primitive (`solid`, `linear_gradient`, `box_shadow`, `with_rounded_border`, `with_clip`, `with_uv`). |
 | `TextureAtlas` | Shelf-packing RGBA8888 texture atlas (`allocate`, `uv_bounds`, `sample_uv`). |
 | `sdf_rounded_box(rel_x, rel_y, half_w, half_h, radius) -> f32` | Signed distance function for a 2D box with rounded corners. |

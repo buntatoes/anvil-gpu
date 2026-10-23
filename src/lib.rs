@@ -1,7 +1,10 @@
-//! Proprietary 2D quad compositor, shelf-packing RGBA texture atlas, and HLSL SDF shader pipeline.
+//! Proprietary 2D quad compositor, shelf-packing RGBA texture atlas, and HLSL/GLSL SDF shader pipeline.
 
-/// Embedded HLSL Shader Model 5.0 source for the Direct3D compositor pipeline.
+/// Embedded HLSL Shader Model 5.0 source for the Direct3D compositor pipeline (Windows).
 pub const COMPOSITOR_HLSL: &str = include_str!("../shaders/compositor.hlsl");
+
+/// Embedded GLSL 330 Core source for the OpenGL/Vulkan compositor pipeline (Linux & cross-platform).
+pub const COMPOSITOR_GLSL: &str = include_str!("../shaders/compositor.glsl");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuColor {
@@ -427,8 +430,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embeds_hlsl_shader_and_packs_atlas_regions() {
+    fn embeds_hlsl_and_glsl_shaders_and_packs_atlas_regions() {
         assert!(COMPOSITOR_HLSL.contains("SdfRoundedBox"));
+        assert!(COMPOSITOR_GLSL.contains("SdfRoundedBox"));
+        assert!(COMPOSITOR_GLSL.contains("#version 330 core"));
         let mut atlas = TextureAtlas::new(32, 32);
         let red_2x2 = vec![255, 0, 0, 255].repeat(4);
         let reg = atlas.allocate(2, 2, &red_2x2).unwrap();
