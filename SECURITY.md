@@ -2,7 +2,7 @@
 
 ## Proof of Concept (PoC) Notice
 
-`flux-gpu` is a standalone, zero-dependency **Proof of Concept (PoC)** 2D signed-distance-field (SDF) quad compositor, `NV12` BT.709 GPU video surface pipeline, shelf-packing RGBA texture atlas, and HLSL/GLSL shader library authored from scratch by **Buntos** as part of the [**Flux Browser**](https://github.com/buntatoes/flux-browser) engine ecosystem.
+`flux-gpu` is a standalone, zero-dependency **Proof of Concept (PoC)** 2D signed-distance-field (SDF) quad compositor, `NV12` BT.709 GPU video surface pipeline, shelf-packing RGBA texture atlas, and HLSL/GLSL shader library built from scratch as part of the [**Flux Browser**](https://github.com/buntatoes/flux-browser) engine ecosystem.
 
 ---
 

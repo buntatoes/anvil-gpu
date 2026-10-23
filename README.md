@@ -10,8 +10,7 @@
   </p>
 </div>
 
-> [!NOTE]
-> **Proof of Concept (PoC) Notice**: `flux-gpu` is a standalone, zero-dependency **Proof of Concept** 2D quad compositor and `NV12` BT.709 GPU video surface library authored from scratch by **Buntos** as part of the [**Flux Browser**](https://github.com/buntatoes/flux-browser) engine ecosystem. It is implemented in **Rust**, **HLSL Shader Model 5.0** ([`shaders/compositor.hlsl`](./shaders/compositor.hlsl) for Windows Direct3D), and **GLSL 330 Core** ([`shaders/compositor.glsl`](./shaders/compositor.glsl) for Linux / cross-platform OpenGL & Vulkan).
+`flux-gpu` is a standalone, zero-dependency 2D SDF quad compositor and `NV12` BT.709 GPU video surface library written in **Rust**, **HLSL Shader Model 5.0** ([`shaders/compositor.hlsl`](./shaders/compositor.hlsl) for Windows Direct3D), and **GLSL 330 Core** ([`shaders/compositor.glsl`](./shaders/compositor.glsl) for Linux / cross-platform OpenGL & Vulkan), built from scratch as part of the [**Flux Browser**](https://github.com/buntatoes/flux-browser) Proof of Concept engine ecosystem.
 
 ---
 
