@@ -5,6 +5,8 @@
 
 uniform vec2 uViewportSize;
 uniform sampler2D uAtlasTexture;
+uniform sampler2D uVideoLumaTexture;
+uniform sampler2D uVideoChromaTexture;
 
 #ifdef VERTEX_SHADER
 layout(location = 0) in vec2 aLocalPos;
@@ -82,6 +84,25 @@ vec4 EvaluateLinearGradient(vec2 relPos, vec2 halfSize, float angleRad, vec4 sta
     return mix(startColor, endColor, t);
 }
 
+vec4 ConvertNv12Bt709ToRgba(float ySample, vec2 uvSample)
+{
+    float y = max(ySample - (16.0 / 255.0), 0.0) * 1.16438356;
+    float u = uvSample.x - 0.5;
+    float v = uvSample.y - 0.5;
+    float r = clamp(y + 1.79274107 * v, 0.0, 1.0);
+    float g = clamp(y - 0.21324861 * u - 0.53290933 * v, 0.0, 1.0);
+    float b = clamp(y + 2.11240179 * u, 0.0, 1.0);
+    return vec4(r, g, b, 1.0);
+}
+
+vec3 ConvertRgbaToYuvBt709(vec3 rgb)
+{
+    float y = (16.0 / 255.0) + 0.18258588 * rgb.r + 0.61423059 * rgb.g + 0.06200706 * rgb.b;
+    float u = 0.5 - 0.10064373 * rgb.r - 0.33857195 * rgb.g + 0.43921569 * rgb.b;
+    float v = 0.5 + 0.43921569 * rgb.r - 0.39894216 * rgb.g - 0.04027352 * rgb.b;
+    return clamp(vec3(y, u, v), vec3(0.0), vec3(1.0));
+}
+
 void main()
 {
     vec2 clipMin = vClipRect.xy;
@@ -128,7 +149,13 @@ void main()
     {
         baseColor = EvaluateLinearGradient(relPos, halfSize, vParams2.x, vFillColor, vFillColorEnd);
     }
-    if (hasTexture > 0.5)
+    if (hasTexture > 1.5)
+    {
+        float yVal = texture(uVideoLumaTexture, vUv).r;
+        vec2 uvVal = texture(uVideoChromaTexture, vUv).rg;
+        baseColor *= ConvertNv12Bt709ToRgba(yVal, uvVal);
+    }
+    else if (hasTexture > 0.5)
     {
         baseColor *= texture(uAtlasTexture, vUv);
     }

@@ -1,10 +1,10 @@
 # flux-gpu
 
-[![Release](https://img.shields.io/badge/release-v.03-e8c37a)](https://github.com/buntatoes/flux-gpu/releases/tag/v.03)
+[![Release](https://img.shields.io/badge/release-v.04-e8c37a)](https://github.com/buntatoes/flux-gpu/releases/tag/v.04)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](./LICENSE)
 [![Edition](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://github.com/buntatoes/flux-gpu)
 
-`flux-gpu` is a standalone 2D quad compositor library written in **Rust**, **HLSL Shader Model 5.0** ([`shaders/compositor.hlsl`](./shaders/compositor.hlsl) for Windows Direct3D), and **GLSL 330 Core** ([`shaders/compositor.glsl`](./shaders/compositor.glsl) for Linux / cross-platform OpenGL & Vulkan).
+`flux-gpu` is a standalone 2D quad compositor and `NV12` BT.709 GPU video surface library written in **Rust**, **HLSL Shader Model 5.0** ([`shaders/compositor.hlsl`](./shaders/compositor.hlsl) for Windows Direct3D), and **GLSL 330 Core** ([`shaders/compositor.glsl`](./shaders/compositor.glsl) for Linux / cross-platform OpenGL & Vulkan).
 
 ---
 
@@ -12,10 +12,12 @@
 
 - **Signed-Distance-Field (SDF) Quad Primitives (`GpuQuad`)**:
   - Solid fills (`GpuQuad::solid`), linear gradients at arbitrary angles (`GpuQuad::linear_gradient`), soft SDF box shadows (`GpuQuad::box_shadow`), textured quads, anti-aliased rounded corners (`corner_radius`), borders (`border_width`, `border_color`), and per-quad scissor clip rectangles.
+- **Semi-Planar 4:2:0 `NV12` GPU Video Surfaces & BT.709 Shaders (`Nv12Surface`, `ConvertNv12Bt709ToRgba`, `ConvertRgbaToYuvBt709`)**:
+  - Hardware video decoders and encoders (Direct3D 11 Video / DXVA2 on Windows and VA-API on Linux) operate on `NV12` (`Y` luma + interleaved `UV` chroma) surfaces. `flux-gpu v.04` provides `Nv12Surface::from_rgba_bt709` / `to_rgba_bt709` alongside GPU `ConvertNv12Bt709ToRgba` and `ConvertRgbaToYuvBt709` shaders in both HLSL and GLSL.
 - **Shelf-Packing RGBA Texture Atlas (`TextureAtlas`)**:
   - Packs decoded RGBA images and glyph bitmaps into a single GPU-ready texture sheet and computes normalized `[u0, v0, u1, v1]` UV coordinates.
 - **Cross-Platform Embedded Shaders (`COMPOSITOR_HLSL` & `COMPOSITOR_GLSL`)**:
-  - Direct3D 11/12 HLSL (`shaders/compositor.hlsl`) and OpenGL 3.3 Core / Vulkan GLSL (`shaders/compositor.glsl`) vertex and fragment shaders evaluating `SdfRoundedBox` coverage, `SdfBoxShadowAlpha` smoothstep shadow falloff, `EvaluateLinearGradient` color ramps, border blending, scissor clipping, and atlas texture modulation.
+  - Direct3D 11/12 HLSL (`shaders/compositor.hlsl`) and OpenGL 3.3 Core / Vulkan GLSL (`shaders/compositor.glsl`) vertex and fragment shaders evaluating `SdfRoundedBox` coverage, `SdfBoxShadowAlpha` smoothstep shadow falloff, `EvaluateLinearGradient` color ramps, `ConvertNv12Bt709ToRgba` hardware video sampling, border blending, scissor clipping, and atlas texture modulation.
 - **Matching Software SDF Compositor (`render_frame_rgba`)**:
   - Evaluates the exact same SDF rounded-rectangle, linear gradient, box shadow, border, clipping, and texture sampling pipeline into a CPU RGBA8888 framebuffer for headless testing and fallback rendering.
 
@@ -63,6 +65,8 @@ assert_eq!(framebuffer.len(), 140 * 80 * 4);
 | `COMPOSITOR_GLSL: &str` | Embedded GLSL 330 Core vertex and fragment shader source (Linux OpenGL / Vulkan). |
 | `GpuQuad` | 2D quad primitive (`solid`, `linear_gradient`, `box_shadow`, `with_rounded_border`, `with_clip`, `with_uv`). |
 | `TextureAtlas` | Shelf-packing RGBA8888 texture atlas (`allocate`, `uv_bounds`, `sample_uv`). |
+| `Nv12Surface` | Semi-planar 4:2:0 `NV12` GPU video surface (`from_rgba_bt709`, `to_rgba_bt709`). |
+| `bt709_rgba_to_yuv` / `bt709_yuv_to_rgba` | BT.709 color-space conversion between `RGBA8888` and `YUV` (`NV12`). |
 | `sdf_rounded_box(rel_x, rel_y, half_w, half_h, radius) -> f32` | Signed distance function for a 2D box with rounded corners. |
 | `sdf_box_shadow_alpha(dist, blur_radius) -> f32` | Smoothstep SDF falloff alpha (`0.0..=1.0`) for a soft box shadow. |
 | `sample_linear_gradient(...) -> GpuColor` | Evaluates a two-stop linear gradient at an arbitrary angle in degrees. |

@@ -35,7 +35,28 @@ struct PSInput
 };
 
 Texture2D AtlasTexture : register(t0);
+Texture2D VideoLumaTexture : register(t1);
+Texture2D VideoChromaTexture : register(t2);
 SamplerState LinearSampler : register(s0);
+
+float4 ConvertNv12Bt709ToRgba(float ySample, float2 uvSample)
+{
+    float y = max(ySample - (16.0 / 255.0), 0.0) * 1.16438356;
+    float u = uvSample.x - 0.5;
+    float v = uvSample.y - 0.5;
+    float r = saturate(y + 1.79274107 * v);
+    float g = saturate(y - 0.21324861 * u - 0.53290933 * v);
+    float b = saturate(y + 2.11240179 * u);
+    return float4(r, g, b, 1.0);
+}
+
+float3 ConvertRgbaToYuvBt709(float3 rgb)
+{
+    float y = (16.0 / 255.0) + 0.18258588 * rgb.r + 0.61423059 * rgb.g + 0.06200706 * rgb.b;
+    float u = 0.5 - 0.10064373 * rgb.r - 0.33857195 * rgb.g + 0.43921569 * rgb.b;
+    float v = 0.5 + 0.43921569 * rgb.r - 0.39894216 * rgb.g - 0.04027352 * rgb.b;
+    return saturate(float3(y, u, v));
+}
 
 PSInput VSMain(VSInput input)
 {
@@ -127,7 +148,13 @@ float4 PSMain(PSInput input) : SV_TARGET
     {
         baseColor = EvaluateLinearGradient(relPos, halfSize, input.Params2.x, input.FillColor, input.FillColorEnd);
     }
-    if (hasTexture > 0.5)
+    if (hasTexture > 1.5)
+    {
+        float yVal = VideoLumaTexture.Sample(LinearSampler, input.Uv).r;
+        float2 uvVal = VideoChromaTexture.Sample(LinearSampler, input.Uv).rg;
+        baseColor *= ConvertNv12Bt709ToRgba(yVal, uvVal);
+    }
+    else if (hasTexture > 0.5)
     {
         baseColor *= AtlasTexture.Sample(LinearSampler, input.Uv);
     }

@@ -43,6 +43,123 @@ impl GpuRect {
     }
 }
 
+/// Convert an 8-bit `RGBA` color into BT.709 `YUV` (`(y, u, v)`).
+pub fn bt709_rgba_to_yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+    let rf = r as f32;
+    let gf = g as f32;
+    let bf = b as f32;
+    let y = (16.0 + 0.182586 * rf + 0.614231 * gf + 0.062007 * bf)
+        .round()
+        .clamp(16.0, 235.0) as u8;
+    let u = (128.0 - 0.100644 * rf - 0.338572 * gf + 0.439216 * bf)
+        .round()
+        .clamp(16.0, 240.0) as u8;
+    let v = (128.0 + 0.439216 * rf - 0.398942 * gf - 0.040274 * bf)
+        .round()
+        .clamp(16.0, 240.0) as u8;
+    (y, u, v)
+}
+
+/// Convert an 8-bit BT.709 `(y, u, v)` sample into `GpuColor` (`RGBA8888`).
+pub fn bt709_yuv_to_rgba(y: u8, u: u8, v: u8) -> GpuColor {
+    let yf = ((y as f32) - 16.0).max(0.0) * 1.164384;
+    let uf = (u as f32) - 128.0;
+    let vf = (v as f32) - 128.0;
+    let r = (yf + 1.792741 * vf).round().clamp(0.0, 255.0) as u8;
+    let g = (yf - 0.213249 * uf - 0.532909 * vf)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+    let b = (yf + 2.112402 * uf).round().clamp(0.0, 255.0) as u8;
+    GpuColor::rgba(r, g, b, 255)
+}
+
+/// Semi-planar 4:2:0 `NV12` GPU video surface (`Y` luma plane + interleaved `UV` chroma plane).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Nv12Surface {
+    pub width: u32,
+    pub height: u32,
+    pub y_plane: Vec<u8>,
+    pub uv_plane: Vec<u8>,
+}
+
+impl Nv12Surface {
+    /// Allocate a zeroed (black) `NV12` surface for `(width, height)`.
+    pub fn new(width: u32, height: u32) -> Self {
+        let w = width.max(2) & !1;
+        let h = height.max(2) & !1;
+        let y_len = (w as usize) * (h as usize);
+        let uv_len = ((w / 2) as usize) * ((h / 2) as usize) * 2;
+        Self {
+            width: w,
+            height: h,
+            y_plane: vec![16; y_len],
+            uv_plane: vec![128; uv_len],
+        }
+    }
+
+    /// Convert an `RGBA8888` buffer into a semi-planar BT.709 `NV12` surface for GPU video encoding.
+    pub fn from_rgba_bt709(width: u32, height: u32, rgba: &[u8]) -> Option<Self> {
+        if width < 2 || height < 2 || (width % 2 != 0) || (height % 2 != 0) {
+            return None;
+        }
+        let expected = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?;
+        if rgba.len() < expected {
+            return None;
+        }
+        let mut surface = Self::new(width, height);
+        let w = width as usize;
+        let h = height as usize;
+        let uv_w = w / 2;
+
+        for by in (0..h).step_by(2) {
+            for bx in (0..w).step_by(2) {
+                let mut u_acc = 0u32;
+                let mut v_acc = 0u32;
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let px = bx + dx;
+                        let py = by + dy;
+                        let idx = (py * w + px) * 4;
+                        let (y, u, v) = bt709_rgba_to_yuv(rgba[idx], rgba[idx + 1], rgba[idx + 2]);
+                        surface.y_plane[py * w + px] = y;
+                        u_acc += u32::from(u);
+                        v_acc += u32::from(v);
+                    }
+                }
+                let uv_idx = ((by / 2) * uv_w + (bx / 2)) * 2;
+                surface.uv_plane[uv_idx] = ((u_acc + 2) / 4) as u8;
+                surface.uv_plane[uv_idx + 1] = ((v_acc + 2) / 4) as u8;
+            }
+        }
+        Some(surface)
+    }
+
+    /// Convert this `NV12` hardware video surface into an `RGBA8888` pixel buffer using BT.709.
+    pub fn to_rgba_bt709(&self) -> Vec<u8> {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let uv_w = w / 2;
+        let mut rgba = vec![0u8; w * h * 4];
+        for py in 0..h {
+            for px in 0..w {
+                let y = self.y_plane[py * w + px];
+                let uv_idx = ((py / 2) * uv_w + (px / 2)) * 2;
+                let u = self.uv_plane[uv_idx];
+                let v = self.uv_plane[uv_idx + 1];
+                let c = bt709_yuv_to_rgba(y, u, v);
+                let dst = (py * w + px) * 4;
+                rgba[dst] = c.r;
+                rgba[dst + 1] = c.g;
+                rgba[dst + 2] = c.b;
+                rgba[dst + 3] = 255;
+            }
+        }
+        rgba
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AtlasRegion {
     pub x: u32,
@@ -432,7 +549,9 @@ mod tests {
     #[test]
     fn embeds_hlsl_and_glsl_shaders_and_packs_atlas_regions() {
         assert!(COMPOSITOR_HLSL.contains("SdfRoundedBox"));
+        assert!(COMPOSITOR_HLSL.contains("ConvertNv12Bt709ToRgba"));
         assert!(COMPOSITOR_GLSL.contains("SdfRoundedBox"));
+        assert!(COMPOSITOR_GLSL.contains("ConvertNv12Bt709ToRgba"));
         assert!(COMPOSITOR_GLSL.contains("#version 330 core"));
         let mut atlas = TextureAtlas::new(32, 32);
         let red_2x2 = vec![255, 0, 0, 255].repeat(4);
@@ -442,6 +561,10 @@ mod tests {
         let uvs = atlas.uv_bounds(reg);
         let sampled = atlas.sample_uv(uvs[0], uvs[1]);
         assert_eq!(sampled, GpuColor::rgba(255, 0, 0, 255));
+
+        let nv12 = Nv12Surface::from_rgba_bt709(2, 2, &red_2x2).unwrap();
+        let decoded = nv12.to_rgba_bt709();
+        assert!(decoded[0] > 230 && decoded[1] < 25 && decoded[2] < 25);
     }
 
     #[test]

@@ -1,10 +1,10 @@
 [package]
 name = "flux-gpu"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["Buntos <324143321+buntatoes@users.noreply.github.com>"]
 license = "MPL-2.0"
-description = "2D signed-distance-field quad compositor, linear gradients, box shadows, RGBA texture atlas, and HLSL/GLSL cross-platform shader pipeline."
+description = "2D signed-distance-field quad compositor, NV12 BT.709 GPU video surface pipeline, RGBA texture atlas, and HLSL/GLSL cross-platform shader pipeline."
 repository = "https://github.com/buntatoes/flux-gpu"
 homepage = "https://github.com/buntatoes/flux-gpu"
 readme = "README.md"
