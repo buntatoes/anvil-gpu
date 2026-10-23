@@ -88,6 +88,10 @@ cargo test
 
 ---
 
+## Security Policy
+
+See [`SECURITY.md`](./SECURITY.md) for supported versions, surface/atlas bounds, and vulnerability reporting instructions.
+
 ## License
 
 Licensed under the Mozilla Public License Version 2.0 ([`MPL-2.0`](./LICENSE)).
