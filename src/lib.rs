@@ -1,4 +1,6 @@
-//! Proprietary 2D quad compositor, shelf-packing RGBA texture atlas, and HLSL/GLSL SDF shader pipeline.
+//! 2D signed-distance-field quad compositor, shelf-packing RGBA texture atlas, and HLSL/GLSL SDF shader pipeline (Proof of Concept).
+//!
+//! Standalone `MPL-2.0` companion library for the Flux Browser Proof of Concept ecosystem.
 
 /// Embedded HLSL Shader Model 5.0 source for the Direct3D compositor pipeline (Windows).
 pub const COMPOSITOR_HLSL: &str = include_str!("../shaders/compositor.hlsl");

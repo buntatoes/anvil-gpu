@@ -1,19 +1,25 @@
-# flux-gpu
+<div align="center">
+  <h1>flux-gpu</h1>
+  <p><strong>2D SDF Quad Compositor, NV12 BT.709 GPU Video Surface Pipeline, Texture Atlas &amp; HLSL/GLSL Shaders (Proof of Concept)</strong></p>
+  <p>
+    <a href="https://github.com/buntatoes/flux-gpu/releases/tag/v.04"><img src="https://img.shields.io/badge/release-v.04-e8c37a?style=flat-square" alt="Release v.04" /></a>
+    <img src="https://img.shields.io/badge/status-Proof_of_Concept_(PoC)-d4a359?style=flat-square" alt="Proof of Concept" />
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MPL--2.0-blue?style=flat-square" alt="License MPL-2.0" /></a>
+    <a href="https://github.com/buntatoes/flux-gpu"><img src="https://img.shields.io/badge/rust-2024_edition-orange?style=flat-square" alt="Rust 2024 Edition" /></a>
+  </p>
+</div>
 
-[![Release](https://img.shields.io/badge/release-v.04-e8c37a)](https://github.com/buntatoes/flux-gpu/releases/tag/v.04)
-[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](./LICENSE)
-[![Edition](https://img.shields.io/badge/rust-2024_edition-orange.svg)](https://github.com/buntatoes/flux-gpu)
-
-`flux-gpu` is a standalone 2D quad compositor and `NV12` BT.709 GPU video surface library written in **Rust**, **HLSL Shader Model 5.0** ([`shaders/compositor.hlsl`](./shaders/compositor.hlsl) for Windows Direct3D), and **GLSL 330 Core** ([`shaders/compositor.glsl`](./shaders/compositor.glsl) for Linux / cross-platform OpenGL & Vulkan).
+> [!NOTE]
+> **Proof of Concept (PoC) Notice**: `flux-gpu` is a standalone, zero-dependency **Proof of Concept** 2D quad compositor and `NV12` BT.709 GPU video surface library authored from scratch by **Buntos** as part of the [**Flux Browser**](https://github.com/buntatoes/flux-browser) engine ecosystem. It is implemented in **Rust**, **HLSL Shader Model 5.0** ([`shaders/compositor.hlsl`](./shaders/compositor.hlsl) for Windows Direct3D), and **GLSL 330 Core** ([`shaders/compositor.glsl`](./shaders/compositor.glsl) for Linux / cross-platform OpenGL & Vulkan).
 
 ---
 
-## Features
+## Features (`v.04`)
 
 - **Signed-Distance-Field (SDF) Quad Primitives (`GpuQuad`)**:
   - Solid fills (`GpuQuad::solid`), linear gradients at arbitrary angles (`GpuQuad::linear_gradient`), soft SDF box shadows (`GpuQuad::box_shadow`), textured quads, anti-aliased rounded corners (`corner_radius`), borders (`border_width`, `border_color`), and per-quad scissor clip rectangles.
 - **Semi-Planar 4:2:0 `NV12` GPU Video Surfaces & BT.709 Shaders (`Nv12Surface`, `ConvertNv12Bt709ToRgba`, `ConvertRgbaToYuvBt709`)**:
-  - Hardware video decoders and encoders (Direct3D 11 Video / DXVA2 on Windows and VA-API on Linux) operate on `NV12` (`Y` luma + interleaved `UV` chroma) surfaces. `flux-gpu v.04` provides `Nv12Surface::from_rgba_bt709` / `to_rgba_bt709` alongside GPU `ConvertNv12Bt709ToRgba` and `ConvertRgbaToYuvBt709` shaders in both HLSL and GLSL.
+  - Hardware video decoders and encoders (Direct3D 11 Video / DXVA2 on Windows and VA-API on Linux) operate on `NV12` (`Y` luma + interleaved `UV` chroma) surfaces. `flux-gpu` provides `Nv12Surface::from_rgba_bt709` / `to_rgba_bt709` alongside GPU `ConvertNv12Bt709ToRgba` and `ConvertRgbaToYuvBt709` shaders in both HLSL and GLSL.
 - **Shelf-Packing RGBA Texture Atlas (`TextureAtlas`)**:
   - Packs decoded RGBA images and glyph bitmaps into a single GPU-ready texture sheet and computes normalized `[u0, v0, u1, v1]` UV coordinates.
 - **Cross-Platform Embedded Shaders (`COMPOSITOR_HLSL` & `COMPOSITOR_GLSL`)**:
@@ -88,4 +94,4 @@ Licensed under the Mozilla Public License Version 2.0 ([`MPL-2.0`](./LICENSE)).
 
 ## Author
 
-**Buntos**
+**Buntos** ([@buntatoes](https://github.com/buntatoes))
