@@ -16,4 +16,4 @@ Drawing runs on the CPU. The shader files are not compiled and are not sent to a
 
 There is no device handle, no mapped GPU memory, and no video decoder in this crate.
 
-Version 0.4.0 is current.
+Version 0.5.0 is current.

@@ -1,13 +1,29 @@
-//! CPU drawing of rounded boxes, shadows, gradients, a texture atlas, and NV12 conversion.
+//! CPU drawing of rounded boxes, box shadows, linear gradients, a shelf-packed RGBA atlas, and RGBA/NV12 conversion.
 //!
-//! The shader files are source text. This crate does not open a GPU device.
+//! CPU entry points:
+//!
+//! - [`render_frame_rgba`] rasterizes [`GpuQuad`] values into a straight RGBA8 framebuffer.
+//! - [`sdf_rounded_box`], [`sdf_box_shadow_alpha`], and [`sample_linear_gradient`] are the signed-distance, shadow, and gradient helpers.
+//! - [`TextureAtlas`] shelf-packs straight RGBA8 images and samples them.
+//! - [`bt709_rgba_to_yuv`], [`bt709_yuv_to_rgba`], and [`Nv12Surface`] convert between straight RGBA8 and limited-range BT.709 NV12.
+//!
+//! `flux-raster` calls the CPU SDF helpers for shadows, rounded boxes, and gradients.
+//! `flux-video` uses [`Nv12Surface`] for CPU color conversion.
+//!
+//! [`COMPOSITOR_HLSL`] and [`COMPOSITOR_GLSL`] are `include_str!` source strings.
+//! This crate does not create a Direct3D, OpenGL, or Vulkan device and does not compile or run those shaders.
 
-/// HLSL source. This crate does not compile or run it.
+/// HLSL Shader Model 5.0 source text from `shaders/compositor.hlsl`.
+///
+/// Embedded with `include_str!`. This crate does not compile or run it.
 pub const COMPOSITOR_HLSL: &str = include_str!("../shaders/compositor.hlsl");
 
-/// GLSL source. This crate does not compile or run it.
+/// GLSL 330 core source text from `shaders/compositor.glsl`.
+///
+/// Embedded with `include_str!`. This crate does not compile or run it.
 pub const COMPOSITOR_GLSL: &str = include_str!("../shaders/compositor.glsl");
 
+/// 8-bit straight RGBA. Channels are not premultiplied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuColor {
     pub r: u8,
@@ -17,11 +33,13 @@ pub struct GpuColor {
 }
 
 impl GpuColor {
+    /// Stores the four straight channels as given.
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
     }
 }
 
+/// Axis-aligned rectangle. `x` and `y` are the minimum corner; size grows toward +x and +y.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GpuRect {
     pub x: f32,
@@ -31,6 +49,7 @@ pub struct GpuRect {
 }
 
 impl GpuRect {
+    /// Builds a rectangle from its minimum corner and its size.
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,
@@ -40,30 +59,49 @@ impl GpuRect {
         }
     }
 
+    /// Reports whether a point lies in this rectangle.
+    ///
+    /// The far edges are exclusive: `x + width` and `y + height` are outside.
     pub fn contains(self, px: f32, py: f32) -> bool {
+        // Same pixel space as the fields. This compares the raw point, not a pixel center.
         px >= self.x && py >= self.y && px < self.x + self.width && py < self.y + self.height
     }
 }
 
-/// Convert an 8-bit `RGBA` color into BT.709 `YUV` (`(y, u, v)`).
+/// Converts 8-bit RGB to limited-range BT.709 YCbCr.
+///
+/// Luma uses Kr 0.2126, Kg 0.7152, and Kb 0.0722, scaled by 219/255 and offset by 16.
+/// It is then rounded and clamped to 16..=235.
+/// Cb and Cr use the matching BT.709 chroma axes, scaled by 224/255 and offset by 128,
+/// then rounded and clamped to 16..=240. Neutral chroma is 128.
+/// This is studio swing, not a full-range matrix with luma 0..=255.
 pub fn bt709_rgba_to_yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     let rf = r as f32;
     let gf = g as f32;
     let bf = b as f32;
+    // Limited-range luma. Peak white lands on 235, not 255.
     let y = (16.0 + 0.182586 * rf + 0.614231 * gf + 0.062007 * bf)
         .round()
         .clamp(16.0, 235.0) as u8;
+    // Limited-range Cb. The blue coefficient is (224/255) * 0.5.
     let u = (128.0 - 0.100644 * rf - 0.338572 * gf + 0.439216 * bf)
         .round()
         .clamp(16.0, 240.0) as u8;
+    // Limited-range Cr, same 224/255 scale, red on the positive axis.
     let v = (128.0 + 0.439216 * rf - 0.398942 * gf - 0.040274 * bf)
         .round()
         .clamp(16.0, 240.0) as u8;
     (y, u, v)
 }
 
-/// Convert an 8-bit BT.709 `(y, u, v)` sample into `GpuColor` (`RGBA8888`).
+/// Converts limited-range BT.709 YCbCr to straight RGBA8.
+///
+/// Luma below 16 is treated as 16. `(Y - 16)` is scaled by 255/219.
+/// Cb and Cr are centered at 128 and expanded with the BT.709 inverse,
+/// including the 255/224 studio-swing scale. Each channel is rounded and clamped to 0..=255.
+/// Alpha is always 255. This is not a full-range (luma 0..=255) inverse.
 pub fn bt709_yuv_to_rgba(y: u8, u: u8, v: u8) -> GpuColor {
+    // Expand studio luma to full 8-bit swing. Values under 16 contribute nothing.
     let yf = ((y as f32) - 16.0).max(0.0) * 1.164384;
     let uf = (u as f32) - 128.0;
     let vf = (v as f32) - 128.0;
@@ -75,17 +113,28 @@ pub fn bt709_yuv_to_rgba(y: u8, u: u8, v: u8) -> GpuColor {
     GpuColor::rgba(r, g, b, 255)
 }
 
-/// Semi-planar 4:2:0 `NV12` GPU video surface (`Y` luma plane + interleaved `UV` chroma plane).
+/// Semi-planar 4:2:0 NV12 buffer in limited-range BT.709.
+///
+/// CPU memory only: this type does not allocate a GPU texture.
+/// `y_plane` is one luma byte per pixel. `uv_plane` is interleaved Cb, Cr with one pair per 2x2 block.
+/// Code 16 is black luma, 235 is peak white, and 128 is neutral chroma.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Nv12Surface {
+    /// Width in pixels. [`Nv12Surface::new`] forces this to an even value of at least 2.
     pub width: u32,
+    /// Height in pixels. [`Nv12Surface::new`] forces this to an even value of at least 2.
     pub height: u32,
+    /// Limited-range luma, row-major, `width * height` bytes.
     pub y_plane: Vec<u8>,
+    /// Interleaved Cb, Cr, row-major, `width * height / 2` bytes.
     pub uv_plane: Vec<u8>,
 }
 
 impl Nv12Surface {
-    /// Allocate a zeroed (black) `NV12` surface for `(width, height)`.
+    /// Allocates an even-sized surface filled with limited-range black.
+    ///
+    /// Dimensions below 2 become 2. Any odd size is rounded down to the next even number
+    /// (`max(n, 2)` with the low bit cleared). Luma bytes are 16 and chroma bytes are 128.
     pub fn new(width: u32, height: u32) -> Self {
         let w = width.max(2) & !1;
         let h = height.max(2) & !1;
@@ -99,7 +148,13 @@ impl Nv12Surface {
         }
     }
 
-    /// Convert an `RGBA8888` buffer into a semi-planar BT.709 `NV12` surface for GPU video encoding.
+    /// Packs tightly packed straight RGBA8 into limited-range BT.709 NV12.
+    ///
+    /// Width and height must both be even and at least 2. There is no row stride.
+    /// Source alpha is ignored. Each pixel keeps its own luma sample.
+    /// Each 2x2 block stores the average of its four Cb samples and the average of its four Cr samples,
+    /// rounded with `(sum + 2) / 4`.
+    /// Returns `None` when the size is unusable or `rgba` is shorter than `width * height * 4`.
     pub fn from_rgba_bt709(width: u32, height: u32, rgba: &[u8]) -> Option<Self> {
         if width < 2 || height < 2 || (width % 2 != 0) || (height % 2 != 0) {
             return None;
@@ -115,6 +170,7 @@ impl Nv12Surface {
         let h = height as usize;
         let uv_w = w / 2;
 
+        // 4:2:0. Chroma is one pair for the block, not a filtered sample between blocks.
         for by in (0..h).step_by(2) {
             for bx in (0..w).step_by(2) {
                 let mut u_acc = 0u32;
@@ -138,7 +194,11 @@ impl Nv12Surface {
         Some(surface)
     }
 
-    /// Convert this `NV12` hardware video surface into an `RGBA8888` pixel buffer using BT.709.
+    /// Expands this surface to tightly packed straight RGBA8.
+    ///
+    /// Each pixel reads its own luma byte and the CbCr pair of its 2x2 block.
+    /// Chroma is not filtered across blocks. Alpha is always 255.
+    /// The matrix is the limited-range inverse in [`bt709_yuv_to_rgba`].
     pub fn to_rgba_bt709(&self) -> Vec<u8> {
         let w = self.width as usize;
         let h = self.height as usize;
@@ -147,6 +207,7 @@ impl Nv12Surface {
         for py in 0..h {
             for px in 0..w {
                 let y = self.y_plane[py * w + px];
+                // Point-sampled chroma: the whole 2x2 block shares one CbCr pair.
                 let uv_idx = ((py / 2) * uv_w + (px / 2)) * 2;
                 let u = self.uv_plane[uv_idx];
                 let v = self.uv_plane[uv_idx + 1];
@@ -162,6 +223,7 @@ impl Nv12Surface {
     }
 }
 
+/// Integer texel rectangle inside a [`TextureAtlas`], origin at the atlas top-left.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AtlasRegion {
     pub x: u32,
@@ -170,17 +232,27 @@ pub struct AtlasRegion {
     pub height: u32,
 }
 
+/// Shelf-packed straight RGBA8 atlas.
+///
+/// Rows fill left to right. One texel is left empty between allocations and between rows.
+/// Texels are copied from the caller and are not premultiplied.
+/// This is CPU memory, not a GPU texture.
 #[derive(Clone, Debug)]
 pub struct TextureAtlas {
     pub width: u32,
     pub height: u32,
+    /// Straight RGBA8, row-major, four bytes per texel.
     pub pixels: Vec<u8>,
+    // Next free texel on the current shelf.
     cursor_x: u32,
+    // Top of the current shelf, in texels. +y is downward.
     cursor_y: u32,
+    // Tallest allocation placed on the current shelf.
     row_height: u32,
 }
 
 impl TextureAtlas {
+    /// Allocates a zero-filled atlas. The shelf cursor starts at the top-left.
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
@@ -192,7 +264,14 @@ impl TextureAtlas {
         }
     }
 
-    /// Allocate a sub-rectangle in the shelf atlas and upload `rgba` pixels into it.
+    /// Shelf-packs `rgba` and copies it into the atlas.
+    ///
+    /// `rgba` must be tightly packed straight RGBA8, four bytes per texel, with no stride.
+    /// A zero size, a short slice, or a rect larger than the atlas returns `None`.
+    /// If the rect does not fit on the current row, the cursor moves to the next shelf
+    /// (`row_height + 1` texels down). There is no search for holes.
+    /// A one-texel gutter is reserved after the rect. That gutter may sit past the far edge,
+    /// which only forces the following allocation onto a new shelf.
     pub fn allocate(&mut self, width: u32, height: u32, rgba: &[u8]) -> Option<AtlasRegion> {
         if width == 0 || height == 0 || rgba.len() < (width as usize) * (height as usize) * 4 {
             return None;
@@ -200,6 +279,7 @@ impl TextureAtlas {
         if width > self.width || height > self.height {
             return None;
         }
+        // Equality still fits. The gutter is applied after the copy.
         if self.cursor_x + width > self.width {
             self.cursor_x = 0;
             self.cursor_y += self.row_height + 1;
@@ -215,6 +295,7 @@ impl TextureAtlas {
             width,
             height,
         };
+        // Straight copy into the shelf. No resample and no premultiply.
         for row in 0..height {
             let src_start = (row * width * 4) as usize;
             let dst_start = (((region.y + row) * self.width + region.x) * 4) as usize;
@@ -227,6 +308,11 @@ impl TextureAtlas {
         Some(region)
     }
 
+    /// Nearest-texel sample of the atlas.
+    ///
+    /// `u` and `v` are clamped to 0..=1 and mapped with `round(t * (size - 1))`,
+    /// so 0 and 1 land on the first and last texels, not on texel edges.
+    /// An empty atlas returns opaque white. The stored channels are returned straight.
     pub fn sample_uv(&self, u: f32, v: f32) -> GpuColor {
         if self.width == 0 || self.height == 0 {
             return GpuColor::rgba(255, 255, 255, 255);
@@ -244,6 +330,10 @@ impl TextureAtlas {
         )
     }
 
+    /// Edge-normalized window of `region`: `[x/w, y/h, (x+width)/w, (y+height)/h]`.
+    ///
+    /// These are fractions of the atlas edges, not texel centers.
+    /// A zero atlas size is treated as 1 so the divisions stay defined.
     pub fn uv_bounds(&self, region: AtlasRegion) -> [f32; 4] {
         let w = self.width.max(1) as f32;
         let h = self.height.max(1) as f32;
@@ -256,26 +346,41 @@ impl TextureAtlas {
     }
 }
 
+/// How a [`GpuQuad`] fills its rectangle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum QuadKind {
+    /// Flat [`GpuQuad::fill_color`].
     Solid,
+    /// Two-stop gradient. [`GpuQuad::fill_color`] is the start color.
+    /// `angle_deg` uses the same direction as [`sample_linear_gradient`].
     LinearGradient { end_color: GpuColor, angle_deg: f32 },
+    /// Soft shadow. `blur_radius` is passed to [`sdf_box_shadow_alpha`].
     BoxShadow { blur_radius: f32 },
 }
 
+/// One quad rasterized by [`render_frame_rgba`] on the CPU.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GpuQuad {
+    /// Fill bounds. The signed distance is measured from the center of this rectangle.
     pub rect: GpuRect,
+    /// Clip rectangle in the same pixel space. Rasterization does not draw outside it.
     pub clip: GpuRect,
+    /// Straight fill, gradient start, or shadow color.
     pub fill_color: GpuColor,
+    /// Straight stroke color. Ignored while `border_width` is 0.
     pub border_color: GpuColor,
+    /// Corner radius in pixels, before the SDF clamps it to the half-extents.
     pub corner_radius: f32,
+    /// Stroke thickness in pixels, inset from the outer edge.
     pub border_width: f32,
+    /// Optional atlas window `[u0, v0, u1, v1]` in the edge space of [`TextureAtlas::uv_bounds`].
     pub uv_rect: Option<[f32; 4]>,
+    /// Solid fill, linear gradient, or box shadow.
     pub kind: QuadKind,
 }
 
 impl GpuQuad {
+    /// Solid straight fill. The clip matches `rect`. Radius, stroke, and UV are clear.
     pub fn solid(rect: GpuRect, fill_color: GpuColor) -> Self {
         Self {
             rect,
@@ -289,6 +394,10 @@ impl GpuQuad {
         }
     }
 
+    /// Two-stop gradient across `rect`. `start_color` is stored as [`GpuQuad::fill_color`].
+    ///
+    /// `angle_deg` is documented on [`sample_linear_gradient`]. Corners stay square until
+    /// [`GpuQuad::with_rounded_border`] is applied. The clip matches `rect`.
     pub fn linear_gradient(
         rect: GpuRect,
         start_color: GpuColor,
@@ -310,6 +419,12 @@ impl GpuQuad {
         }
     }
 
+    /// Shadow quad for a box, expanded by spread and offset, with blur stored on [`QuadKind`].
+    ///
+    /// `rect` is `box_rect` shifted by `(offset_x, offset_y)` and outset by `spread` on every side.
+    /// Width and height are at least 1. `blur_radius` is clamped to >= 0 and the clip is `rect`
+    /// outset by that blur. The corner radius is `(corner_radius + spread)` clamped to >= 0.
+    /// Negative spread is left as a negative outset. The stroke is clear.
     pub fn box_shadow(
         box_rect: GpuRect,
         offset_x: f32,
@@ -345,6 +460,7 @@ impl GpuQuad {
         }
     }
 
+    /// Sets a rounded stroke. Radius and width are clamped to >= 0.
     pub fn with_rounded_border(
         mut self,
         corner_radius: f32,
@@ -357,20 +473,27 @@ impl GpuQuad {
         self
     }
 
+    /// Replaces the clip. The new clip is not intersected with the previous one.
     pub fn with_clip(mut self, clip: GpuRect) -> Self {
         self.clip = clip;
         self
     }
 
+    /// Attaches an atlas window. Sampling happens later, in [`render_frame_rgba`].
     pub fn with_uv(mut self, uv_rect: [f32; 4]) -> Self {
         self.uv_rect = Some(uv_rect);
         self
     }
 }
 
-/// Evaluate the signed distance from `rel_pos` (relative to box center) to a rounded box.
+/// Signed distance from a point to a rounded rectangle.
+///
+/// `rel_x` and `rel_y` are relative to the box center. `half_w` and `half_h` are the half-extents.
+/// `radius` is clamped to `0..=min(half_w, half_h)`.
+/// The result is negative inside, zero on the boundary, and positive outside.
 pub fn sdf_rounded_box(rel_x: f32, rel_y: f32, half_w: f32, half_h: f32, radius: f32) -> f32 {
     let r = radius.min(half_w).min(half_h).max(0.0);
+    // Box extent after the corner circles are removed, then a quarter-circle in the outside quadrant.
     let qx = rel_x.abs() - (half_w - r);
     let qy = rel_y.abs() - (half_h - r);
     let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
@@ -378,14 +501,24 @@ pub fn sdf_rounded_box(rel_x: f32, rel_y: f32, half_w: f32, half_h: f32, radius:
     outside + inside - r
 }
 
-/// Evaluate smoothstep SDF falloff alpha (`0.0..=1.0`) for a box shadow with `blur_radius`.
+/// Smoothstep coverage for a shadow at signed distance `dist`.
+///
+/// `sigma` is `max(blur_radius, 0.5)`. The input `t` is `clamp(0.5 - dist / sigma, 0, 1)`,
+/// then the Hermite step `t*t*(3-2*t)`. Negative `dist` (inside) approaches 1.
+/// Coverage reaches 0 once `dist` is at least `0.5 * sigma`.
 pub fn sdf_box_shadow_alpha(dist: f32, blur_radius: f32) -> f32 {
     let sigma = blur_radius.max(0.5);
     let t = (0.5 - dist / sigma).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Sample a two-stop linear gradient across a box of `(half_w, half_h)` at `angle_deg`.
+/// Two-stop straight-color gradient in box-center space.
+///
+/// The direction is `(sin(angle), -cos(angle))` after `angle_deg` is converted to radians.
+/// Zero degrees points toward decreasing y, which is up when y grows downward.
+/// Ninety degrees points toward increasing x.
+/// The projection is divided by the box extent along that direction, with a floor of 0.5,
+/// so one side of the box is the start color and the opposite side is the end color.
 pub fn sample_linear_gradient(
     rel_x: f32,
     rel_y: f32,
@@ -404,7 +537,16 @@ pub fn sample_linear_gradient(
     lerp_color(start, end, t)
 }
 
-/// Render a list of [`GpuQuad`] primitives into an RGBA framebuffer of `(width, height)`.
+/// Rasterizes `quads` in painter's order into a straight RGBA8 buffer.
+///
+/// The buffer is `width` by `height`, row-major, four bytes per pixel, cleared to `clear` (alpha included).
+/// +x is right and +y is down. Each visited pixel is sampled at its center (`index + 0.5`).
+/// The visit range is the intersection of `clip` with `rect` expanded by the shadow blur,
+/// then `floor` on the minimum and `ceil` on the maximum, clamped to the framebuffer.
+/// Solid and gradient coverage is a one-pixel ramp of the rounded-box distance.
+/// Shadows use [`sdf_box_shadow_alpha`] instead of that ramp.
+/// An atlas sample is applied only when both `uv_rect` and `atlas` are present, as a straight multiply.
+/// Later quads composite over earlier ones through [`blend_pixel`]. RGB stays straight, not premultiplied.
 pub fn render_frame_rgba(
     width: u32,
     height: u32,
@@ -425,6 +567,7 @@ pub fn render_frame_rgba(
             QuadKind::BoxShadow { blur_radius } => blur_radius.max(0.0),
             _ => 0.0,
         };
+        // Pixel indices. The far edge is exclusive after the `ceil` cast into the `..` range.
         let min_x = (quad.rect.x - pad).max(quad.clip.x).floor().max(0.0) as u32;
         let min_y = (quad.rect.y - pad).max(quad.clip.y).floor().max(0.0) as u32;
         let max_x = (quad.rect.x + quad.rect.width + pad)
@@ -443,6 +586,7 @@ pub fn render_frame_rgba(
 
         for py in min_y..max_y {
             for px in min_x..max_x {
+                // Pixel center. `px`/`py` are integer indices; y grows downward.
                 let sample_x = px as f32 + 0.5;
                 let sample_y = py as f32 + 0.5;
                 let rel_x = sample_x - cx;
@@ -461,6 +605,7 @@ pub fn render_frame_rgba(
                     continue;
                 }
 
+                // One-pixel coverage ramp around the zero isosurface. Not a premultiplied store.
                 let outer_alpha = (0.5 - dist).clamp(0.0, 1.0);
                 if outer_alpha <= 0.0 {
                     continue;
@@ -482,6 +627,7 @@ pub fn render_frame_rgba(
                     _ => quad.fill_color,
                 };
                 if let (Some(uv), Some(tex)) = (quad.uv_rect, atlas) {
+                    // Map the pixel center across `rect` into the edge-normalized UV window.
                     let tx = ((sample_x - quad.rect.x) / quad.rect.width.max(1.0)).clamp(0.0, 1.0);
                     let ty = ((sample_y - quad.rect.y) / quad.rect.height.max(1.0)).clamp(0.0, 1.0);
                     let u = uv[0] + (uv[2] - uv[0]) * tx;
@@ -491,6 +637,8 @@ pub fn render_frame_rgba(
                 }
 
                 if quad.border_width > 0.0 {
+                    // `inner_dist` is zero one stroke-width inside the outer edge.
+                    // The mix is a one-pixel ramp around that inner edge.
                     let inner_dist = dist + quad.border_width;
                     let border_mix = (0.5 + inner_dist).clamp(0.0, 1.0);
                     color = lerp_color(color, quad.border_color, border_mix);
@@ -506,6 +654,9 @@ pub fn render_frame_rgba(
     fb
 }
 
+/// Straight channel multiply with rounding `(a * b + 127) / 255`.
+///
+/// Used to tint an atlas sample by the quad color. Not a premultiplied composite.
 fn modulate_color(a: GpuColor, b: GpuColor) -> GpuColor {
     GpuColor {
         r: ((u16::from(a.r) * u16::from(b.r) + 127) / 255) as u8,
@@ -515,6 +666,7 @@ fn modulate_color(a: GpuColor, b: GpuColor) -> GpuColor {
     }
 }
 
+/// Straight per-channel lerp. `t` is not clamped here; gradient callers already clamp it.
 fn lerp_color(a: GpuColor, b: GpuColor, t: f32) -> GpuColor {
     let inv = 1.0 - t;
     GpuColor {
@@ -525,6 +677,11 @@ fn lerp_color(a: GpuColor, b: GpuColor, t: f32) -> GpuColor {
     }
 }
 
+/// Straight source-over onto one framebuffer pixel.
+///
+/// Source RGB is not premultiplied: it is weighted by `src.a` here.
+/// Alpha 255 replaces RGB and writes alpha 255. Alpha 0 leaves the destination unchanged.
+/// Any other alpha blends RGB with rounding `(sum + 127) / 255` and forces destination alpha to 255.
 fn blend_pixel(dst: &mut [u8], src: GpuColor) {
     if src.a == 255 {
         dst[0] = src.r;
@@ -544,6 +701,7 @@ fn blend_pixel(dst: &mut [u8], src: GpuColor) {
     dst[3] = 255;
 }
 
+/// Checks shader source markers, atlas shelf packing, NV12 conversion, rounded quads, gradients, and shadows.
 #[cfg(test)]
 mod tests {
     use super::*;
