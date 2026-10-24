@@ -1,6 +1,16 @@
-# flux-gpu
+<div align="center">
+  <h1>flux-gpu</h1>
+  <p>CPU drawing of rounded boxes, shadows, gradients, and NV12.</p>
+  <p>
+    <img src="https://img.shields.io/badge/release-v.04-e8c37a?style=flat-square" alt="v.04" />
+    <img src="https://img.shields.io/badge/status-Proof_of_Concept-d4a359?style=flat-square" alt="Proof of Concept" />
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MPL--2.0-blue?style=flat-square" alt="MPL-2.0" /></a>
+    <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-policy-2ea44f?style=flat-square" alt="Security" /></a>
+    <img src="https://img.shields.io/badge/rust-2024-orange?style=flat-square" alt="Rust 2024" />
+  </p>
+</div>
 
-CPU drawing helpers: rounded rectangles, shadows, gradients, a texture atlas, and NV12 color conversion. Version 0.4.0.
+Version 0.4.0.
 
 The name is historical. This crate does not open a GPU device. The HLSL and GLSL files are source text stored in the repository. Nothing here compiles them or submits them to Direct3D, OpenGL, or Vulkan.
 
