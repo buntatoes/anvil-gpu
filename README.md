@@ -1,8 +1,8 @@
 <div align="center">
   <h1>anvil-gpu</h1>
-  <p>CPU drawing of rounded boxes, shadows, gradients, and NV12.</p>
+  <p>Tile drawing of rounded boxes, shadows, gradients, and NV12.</p>
   <p>
-    <img src="https://img.shields.io/badge/release-v.05-e8c37a?style=flat-square" alt="v.05" />
+    <img src="https://img.shields.io/badge/release-v.06-e8c37a?style=flat-square" alt="v.06" />
     <img src="https://img.shields.io/badge/status-Proof_of_Concept-d4a359?style=flat-square" alt="Proof of Concept" />
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MPL--2.0-blue?style=flat-square" alt="MPL-2.0" /></a>
     <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-policy-2ea44f?style=flat-square" alt="Security" /></a>
@@ -10,13 +10,15 @@
   </p>
 </div>
 
-Version 0.5.0.
+Version 0.6.0.
 
-The name is historical. This crate does not open a GPU device. The HLSL and GLSL files are source text stored in the repository. Nothing here compiles them or submits them to Direct3D, OpenGL, or Vulkan.
+Draw lists are counted in 16 by 16 tiles, then shaded once. The bytes match `render_frame_rgba`. On Linux the crate loads `libEGL.so.1` when that library is present and a display comes back. It does not create a GL context when that probe fails. The HLSL and GLSL files are still source text. This build does not compile them onto a device. Proof of concept.
 
 ## What it does
 
-- `render_frame_rgba` draws quads into an RGBA buffer on the CPU: solid fills, linear gradients, rounded corners, borders, box shadows, clips, and atlas samples.
+- `GpuDevice::render_quads` counts the 16 by 16 tiles a quad touches, then shades the frame once. Solid fills, linear gradients, rounded corners, borders, box shadows, clips, and atlas samples match `render_frame_rgba`.
+- `composite_rgba_frame` draws an RGBA image through one full-frame quad. The bytes match the source.
+- `convert_rgba_on_device` and `present_nv12_on_device` convert BT.709 NV12. The plane bytes match `Nv12Surface`.
 - `sdf_rounded_box`, `sdf_box_shadow_alpha`, and `sample_linear_gradient` are the math behind that.
 - `TextureAtlas` packs rectangles and returns UV bounds.
 - `Nv12Surface` converts RGBA to NV12 and back with BT.709 coefficients, on the CPU.

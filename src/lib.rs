@@ -11,7 +11,13 @@
 //! `anvil-video` uses [`Nv12Surface`] for CPU color conversion.
 //!
 //! [`COMPOSITOR_HLSL`] and [`COMPOSITOR_GLSL`] are `include_str!` source strings.
-//! This crate does not create a Direct3D, OpenGL, or Vulkan device and does not compile or run those shaders.
+//! [`device`] shades those quads in 16 by 16 tiles and probes `libEGL.so.1` on Linux.
+
+mod device;
+pub use device::{
+    GpuBackend, GpuDevice, composite_rgba_frame, convert_rgba_on_device, device_converts,
+    device_presents, device_tiles_shaded, present_nv12_on_device,
+};
 
 /// HLSL Shader Model 5.0 source text from `shaders/compositor.hlsl`.
 ///
