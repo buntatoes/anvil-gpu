@@ -1,5 +1,34 @@
-// Proprietary 2D SDF Quad Compositor Shader (HLSL Shader Model 5.0)
-// Author: Buntos
+// HLSL Shader Model 5.0 source text. Author: Buntos.
+//
+// Nothing in this repository compiles this file or creates a Direct3D device.
+// The crate embeds this text with include_str!. CPU code in src/lib.rs draws
+// rounded boxes, box shadows, and linear gradients, shelf-packs an RGBA atlas,
+// and converts RGBA and limited-range BT.709 NV12. flux-raster calls those CPU
+// SDF helpers. flux-video uses Nv12Surface for CPU color conversion.
+//
+// Entry points (not invoked from this repository):
+// - VSMain: expands a unit quad into the rect, flips y into clip space, and
+//   forwards colors, clip, UV, and params.
+// - PSMain: rejects fragments outside the clip, evaluates the rounded-box SDF,
+//   and writes a shadow, a solid fill, or a linear gradient. It can multiply
+//   that color by an atlas sample or by an NV12 BT.709 sample.
+//
+// Inputs:
+// - ViewportConstants (b0): ViewportSize in pixels, plus unused Padding.
+// - VSInput: LocalPos (POSITION), Rect (TEXCOORD0, x/y/width/height),
+//   ClipRect (TEXCOORD1, x/y/width/height), FillColor (COLOR0),
+//   FillColorEnd (COLOR1), BorderColor (COLOR2), UvRect (TEXCOORD2, u0/v0/u1/v1),
+//   Params (TEXCOORD3), Params2 (TEXCOORD4).
+// - AtlasTexture (t0), VideoLumaTexture (t1), VideoChromaTexture (t2),
+//   sampled with LinearSampler (s0). This file does not set the sampler filter.
+//
+// Params.x is the corner radius. Params.y is the border width.
+// Params.z above 0.5 multiplies by the atlas. Params.z above 1.5 multiplies by
+// the NV12 luma/chroma pair instead. Params.w above 0.5 selects the gradient.
+// Params.w above 1.5 selects the shadow. Params2.x is the gradient angle in
+// radians. Params2.y is the shadow blur radius.
+// World y grows downward. Clip-space y is flipped. Colors written by PSMain
+// keep RGB straight and scale alpha; this file does not read a destination pixel.
 
 cbuffer ViewportConstants : register(b0)
 {
@@ -39,6 +68,11 @@ Texture2D VideoLumaTexture : register(t1);
 Texture2D VideoChromaTexture : register(t2);
 SamplerState LinearSampler : register(s0);
 
+// Limited-range BT.709 inverse in normalized 0..1 units.
+// ySample is luma. uvSample is Cb, Cr. Luma below 16/255 is treated as 16/255
+// and expanded by 255/219. Chroma is centered at 0.5 and scaled by the
+// studio-swing inverse (255/224 on the BT.709 axes). RGB is saturated to 0..1.
+// Luma is not clamped to 235/255 before the inverse. Alpha is 1.
 float4 ConvertNv12Bt709ToRgba(float ySample, float2 uvSample)
 {
     float y = max(ySample - (16.0 / 255.0), 0.0) * 1.16438356;
@@ -50,6 +84,11 @@ float4 ConvertNv12Bt709ToRgba(float ySample, float2 uvSample)
     return float4(r, g, b, 1.0);
 }
 
+// Limited-range BT.709 forward matrix in normalized 0..1 units.
+// rgb is 0..1. Luma is offset by 16/255 and scaled by 219/255
+// (Kr 0.2126, Kg 0.7152, Kb 0.0722). Chroma is offset by 0.5 and scaled by 224/255.
+// The result is clamped to 0..1, not to the narrower 16..235 and 16..240 codes.
+// PSMain does not call this function.
 float3 ConvertRgbaToYuvBt709(float3 rgb)
 {
     float y = (16.0 / 255.0) + 0.18258588 * rgb.r + 0.61423059 * rgb.g + 0.06200706 * rgb.b;
@@ -58,6 +97,9 @@ float3 ConvertRgbaToYuvBt709(float3 rgb)
     return saturate(float3(y, u, v));
 }
 
+// LocalPos is the unit quad, 0..1. World position is the rect minimum plus
+// LocalPos times the size. NDC is that position over the viewport, mapped to
+// -1..1, then y is flipped so world +y (down) becomes clip -y.
 PSInput VSMain(VSInput input)
 {
     PSInput output;
@@ -78,6 +120,9 @@ PSInput VSMain(VSInput input)
     return output;
 }
 
+// Signed distance to a rounded box centered at the origin.
+// p is relative to the center. Negative inside, zero on the boundary, positive outside.
+// The radius is clamped so the corner arcs fit inside halfSize.
 float SdfRoundedBox(float2 p, float2 halfSize, float radius)
 {
     float r = min(radius, min(halfSize.x, halfSize.y));
@@ -85,6 +130,8 @@ float SdfRoundedBox(float2 p, float2 halfSize, float radius)
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
+// Hermite smoothstep of (0.5 - dist / sigma), with sigma at least 0.5.
+// Negative dist (inside) approaches 1. Coverage reaches 0 at dist >= 0.5 * sigma.
 float SdfBoxShadowAlpha(float dist, float blurRadius)
 {
     float sigma = max(blurRadius, 0.5);
@@ -92,6 +139,9 @@ float SdfBoxShadowAlpha(float dist, float blurRadius)
     return t * t * (3.0 - 2.0 * t);
 }
 
+// Two-stop gradient. Direction is (sin(angleRad), -cos(angleRad)).
+// Zero radians points toward decreasing y. The box extent along that direction
+// maps one side to startColor and the opposite side to endColor.
 float4 EvaluateLinearGradient(float2 relPos, float2 halfSize, float angleRad, float4 startColor, float4 endColor)
 {
     float2 dir = float2(sin(angleRad), -cos(angleRad));
@@ -103,7 +153,7 @@ float4 EvaluateLinearGradient(float2 relPos, float2 halfSize, float angleRad, fl
 
 float4 PSMain(PSInput input) : SV_TARGET
 {
-    // Scissor clip check
+    // Inclusive on the clip maximum. PixelPos is the interpolated world position, y down.
     float2 clipMin = input.ClipRect.xy;
     float2 clipMax = input.ClipRect.xy + input.ClipRect.zw;
     if (input.PixelPos.x < clipMin.x || input.PixelPos.y < clipMin.y ||
@@ -123,7 +173,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     float dist = SdfRoundedBox(relPos, halfSize, radius);
 
-    // Primitive kind 2.0: SDF Box Shadow
+    // primKind above 1.5: shadow. Alpha is fill alpha times the smoothstep. RGB stays straight.
     if (primKind > 1.5)
     {
         float blurRadius = input.Params2.y;
@@ -137,6 +187,7 @@ float4 PSMain(PSInput input) : SV_TARGET
         return shadowColor;
     }
 
+    // One-pixel coverage ramp around the zero isosurface.
     float outerAlpha = saturate(0.5 - dist);
     if (outerAlpha <= 0.0)
     {
@@ -144,10 +195,12 @@ float4 PSMain(PSInput input) : SV_TARGET
     }
 
     float4 baseColor = input.FillColor;
+    // primKind above 0.5 and at most 1.5: gradient. Shadow already returned above.
     if (primKind > 0.5)
     {
         baseColor = EvaluateLinearGradient(relPos, halfSize, input.Params2.x, input.FillColor, input.FillColorEnd);
     }
+    // hasTexture above 1.5: NV12 pair. Above 0.5 only: atlas. Multiply is straight, not a blend.
     if (hasTexture > 1.5)
     {
         float yVal = VideoLumaTexture.Sample(LinearSampler, input.Uv).r;
@@ -161,6 +214,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
     if (borderWidth > 0.0)
     {
+        // innerDist is zero one stroke-width inside the outer edge. The mix is a one-pixel ramp.
         float innerDist = dist + borderWidth;
         float borderMix = saturate(0.5 + innerDist);
         baseColor = lerp(baseColor, input.BorderColor, borderMix);

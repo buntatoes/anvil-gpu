@@ -1,3 +1,9 @@
+# CPU drawing helpers: rounded boxes, shadows, linear gradients, an RGBA
+# shelf atlas, and RGBA <-> NV12 conversion.
+# shaders/compositor.hlsl and shaders/compositor.glsl are included as source
+# strings and are not compiled or run.
+# Callers: flux-raster (SDF and gradients) and flux-video (NV12 planes).
+
 [package]
 name = "flux-gpu"
 version = "0.4.0"
