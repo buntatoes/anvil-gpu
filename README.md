@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>flux-gpu</h1>
+  <h1>root-gpu</h1>
   <p>CPU drawing of rounded boxes, shadows, gradients, and NV12.</p>
   <p>
     <img src="https://img.shields.io/badge/release-v.05-e8c37a?style=flat-square" alt="v.05" />
@@ -32,17 +32,17 @@ Rust 2024. No crates.io dependencies.
 
 ## The other repositories
 
-The browser is [flux-browser](https://github.com/buntatoes/flux-browser). These libraries sit next to it. None of them come from crates.io.
+The browser is [root-browser](https://github.com/buntatoes/root-browser). These libraries sit next to it. None of them come from crates.io.
 
 | Repository | What it is |
 | --- | --- |
-| [flux-cipher](https://github.com/buntatoes/flux-cipher) | AES-128, AES-256, CTR, AES-256-GCM |
-| [flux-compress](https://github.com/buntatoes/flux-compress) | DEFLATE, zlib, gzip |
-| [flux-image](https://github.com/buntatoes/flux-image) | PNG, JPEG, GIF, WebP, ICO, BMP, PPM |
-| [flux-json](https://github.com/buntatoes/flux-json) | JSON |
-| [flux-ttf](https://github.com/buntatoes/flux-ttf) | TrueType and OpenType |
-| [flux-gpu](https://github.com/buntatoes/flux-gpu) | CPU drawing of boxes, shadows, and NV12 |
-| [flux-video](https://github.com/buntatoes/flux-video) | CPU frames in a small MP4 container |
+| [root-cipher](https://github.com/buntatoes/root-cipher) | AES-128, AES-256, CTR, AES-256-GCM |
+| [root-compress](https://github.com/buntatoes/root-compress) | DEFLATE, zlib, gzip |
+| [root-image](https://github.com/buntatoes/root-image) | PNG, JPEG, GIF, WebP, ICO, BMP, PPM |
+| [root-json](https://github.com/buntatoes/root-json) | JSON |
+| [root-ttf](https://github.com/buntatoes/root-ttf) | TrueType and OpenType |
+| [root-gpu](https://github.com/buntatoes/root-gpu) | CPU drawing of boxes, shadows, and NV12 |
+| [root-video](https://github.com/buntatoes/root-video) | CPU frames in a small MP4 container |
 
 ## License
 
