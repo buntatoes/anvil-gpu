@@ -7,8 +7,8 @@
 //! - [`TextureAtlas`] shelf-packs straight RGBA8 images and samples them.
 //! - [`bt709_rgba_to_yuv`], [`bt709_yuv_to_rgba`], and [`Nv12Surface`] convert between straight RGBA8 and limited-range BT.709 NV12.
 //!
-//! `root-raster` calls the CPU SDF helpers for shadows, rounded boxes, and gradients.
-//! `root-video` uses [`Nv12Surface`] for CPU color conversion.
+//! `anvil-raster` calls the CPU SDF helpers for shadows, rounded boxes, and gradients.
+//! `anvil-video` uses [`Nv12Surface`] for CPU color conversion.
 //!
 //! [`COMPOSITOR_HLSL`] and [`COMPOSITOR_GLSL`] are `include_str!` source strings.
 //! This crate does not create a Direct3D, OpenGL, or Vulkan device and does not compile or run those shaders.

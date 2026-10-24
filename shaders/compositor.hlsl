@@ -3,8 +3,8 @@
 // Nothing in this repository compiles this file or creates a Direct3D device.
 // The crate embeds this text with include_str!. CPU code in src/lib.rs draws
 // rounded boxes, box shadows, and linear gradients, shelf-packs an RGBA atlas,
-// and converts RGBA and limited-range BT.709 NV12. root-raster calls those CPU
-// SDF helpers. root-video uses Nv12Surface for CPU color conversion.
+// and converts RGBA and limited-range BT.709 NV12. anvil-raster calls those CPU
+// SDF helpers. anvil-video uses Nv12Surface for CPU color conversion.
 //
 // Entry points (not invoked from this repository):
 // - VSMain: expands a unit quad into the rect, flips y into clip space, and

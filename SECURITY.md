@@ -2,11 +2,11 @@
 
 Report problems in private:
 
-https://github.com/buntatoes/root-gpu/security/advisories/new
+https://github.com/buntatoes/anvil-gpu/security/advisories/new
 
 The browser repository takes the same kind of report:
 
-https://github.com/buntatoes/root-browser/security/advisories/new
+https://github.com/buntatoes/anvil-browser/security/advisories/new
 
 Do not put the details in a public issue.
 
