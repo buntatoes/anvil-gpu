@@ -1,11 +1,11 @@
-//! 2D signed-distance-field quad compositor, shelf-packing RGBA texture atlas, and HLSL/GLSL SDF shader pipeline (Proof of Concept).
+//! CPU drawing of rounded boxes, shadows, gradients, a texture atlas, and NV12 conversion.
 //!
-//! Standalone `MPL-2.0` companion library for the Flux Browser Proof of Concept ecosystem.
+//! The shader files are source text. This crate does not open a GPU device.
 
-/// Embedded HLSL Shader Model 5.0 source for the Direct3D compositor pipeline (Windows).
+/// HLSL source. This crate does not compile or run it.
 pub const COMPOSITOR_HLSL: &str = include_str!("../shaders/compositor.hlsl");
 
-/// Embedded GLSL 330 Core source for the OpenGL/Vulkan compositor pipeline (Linux & cross-platform).
+/// GLSL source. This crate does not compile or run it.
 pub const COMPOSITOR_GLSL: &str = include_str!("../shaders/compositor.glsl");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
