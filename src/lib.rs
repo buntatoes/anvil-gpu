@@ -666,9 +666,9 @@ pub struct D3d11HardwareStatus {
     pub device_created: bool,
     /// Negotiated D3D feature level (for example `0xb000` for `11_0`), or `0` on software fallback.
     pub feature_level: u32,
-    /// Byte length of compiled `vs_main` DXBC bytecode.
+    /// Byte length of compiled `VSMain` DXBC bytecode.
     pub vs_bytecode_len: usize,
-    /// Byte length of compiled `ps_main` DXBC bytecode.
+    /// Byte length of compiled `PSMain` DXBC bytecode.
     pub ps_bytecode_len: usize,
     /// Short backend label.
     pub backend_label: &'static str,
@@ -696,7 +696,7 @@ pub fn compile_hlsl_entry(
 }
 
 /// Probe Direct3D 11 device creation (`d3d11.dll`) and compile [`COMPOSITOR_HLSL`]
-/// (`vs_main` and `ps_main`) into `DXBC` bytecode on Windows.
+/// (`VSMain` and `PSMain`) into `DXBC` bytecode on Windows.
 pub fn probe_and_compile_d3d11_compositor() -> D3d11HardwareStatus {
     #[cfg(target_os = "windows")]
     {
