@@ -31,7 +31,7 @@ What is real on the hardware side:
 
 The probe is cached per process, not per machine. On Linux, the first `GpuDevice::open`, `Compositor::open`, or `probe_hardware` in a process loads EGL and initializes the default display, which connects that process to the display server, and the connection stays open until the process exits. A program that runs one renderer process per tab should probe once in the main process and pass the decision to each renderer, for example by calling `Compositor::software()` there when the main process picked software, rather than letting every renderer open its own connection.
 
-How the shader passes were checked: every GLSL pass and every HLSL entry point passes `glslangValidator`. The GLSL passes were also run once on Mesa's llvmpipe driver with a throwaway program outside this repository, and they matched the CPU output byte for byte on 1,500 random scenes. That was a spot check, not a test in this repository. The HLSL passes have not been run on a device, and on Windows they are only compiled.
+How the shader passes were checked: every GLSL pass and every HLSL entry point passes `glslangValidator`. The tests in this repository run the CPU passes only; nothing here runs a shader. The GLSL passes were also compared against the CPU output once on Mesa's llvmpipe driver, by a separate program that is not part of this repository and is not a test. The HLSL passes have not been run on a device, and on Windows they are only compiled.
 
 ## What it does
 
