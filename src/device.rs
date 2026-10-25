@@ -8,6 +8,7 @@
 //! library leaves the backend on the tile pipeline. This file does not ship a
 //! key or a personal path.
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{GpuColor, GpuQuad, GpuRect, Nv12Surface, TextureAtlas, render_frame_rgba};
@@ -23,7 +24,7 @@ static DEVICE_PRESENTS: AtomicU64 = AtomicU64::new(0);
 pub enum GpuBackend {
     /// 16 by 16 tiles. This is the path the tests run.
     Tiled,
-    /// `libEGL.so.1` loaded and `eglGetDisplay` returned a display.
+    /// `libEGL.so.1` loaded and `eglInitialize` succeeded on the default display.
     Egl,
 }
 
@@ -34,7 +35,7 @@ pub struct GpuDevice {
 }
 
 impl GpuDevice {
-    /// Probe EGL, then keep the tile pipeline when no display is available.
+    /// Probe EGL (once per process), then keep the tile pipeline when no display is available.
     pub fn open() -> Self {
         Self {
             backend: if egl_display_opens() {
@@ -152,42 +153,18 @@ fn clip_one(quad: &GpuQuad, tile: GpuRect) -> Option<GpuQuad> {
     Some(next)
 }
 
+/// True when the cached EGL probe initialized a display.
 fn egl_display_opens() -> bool {
-    #[cfg(target_os = "linux")]
-    unsafe {
-        probe_egl()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
-    }
+    egl_info().is_some()
 }
 
-#[cfg(target_os = "linux")]
-unsafe fn probe_egl() -> bool {
-    unsafe extern "C" {
-        fn dlopen(filename: *const i8, flags: i32) -> *mut core::ffi::c_void;
-        fn dlsym(handle: *mut core::ffi::c_void, symbol: *const i8) -> *mut core::ffi::c_void;
-        fn dlclose(handle: *mut core::ffi::c_void) -> i32;
-    }
-    const RTLD_NOW: i32 = 2;
-    let name = b"libEGL.so.1\0";
-    let handle = unsafe { dlopen(name.as_ptr() as *const i8, RTLD_NOW) };
-    if handle.is_null() {
-        return false;
-    }
-    let symbol = b"eglGetDisplay\0";
-    let get_display = unsafe { dlsym(handle, symbol.as_ptr() as *const i8) };
-    let opened = if get_display.is_null() {
-        false
-    } else {
-        // EGL_DEFAULT_DISPLAY is 0. A null display means there is nothing to draw on.
-        let egl_get_display: unsafe extern "C" fn(isize) -> *mut core::ffi::c_void =
-            unsafe { std::mem::transmute(get_display) };
-        unsafe { !egl_get_display(0).is_null() }
-    };
-    unsafe { dlclose(handle) };
-    opened
+/// EGL version from the first probe in this process, or `None`.
+///
+/// The probe runs once. Later calls read the cached answer, so opening a
+/// [`GpuDevice`] per draw no longer loads the library each time.
+pub(crate) fn egl_info() -> Option<crate::sys::EglInfo> {
+    static EGL: OnceLock<Option<crate::sys::EglInfo>> = OnceLock::new();
+    *EGL.get_or_init(crate::sys::egl_probe)
 }
 
 #[cfg(test)]
@@ -246,7 +223,7 @@ mod tests {
 
     #[test]
     fn nv12_convert_and_present_match_the_cpu_planes() {
-        let rgba = vec![220u8, 30, 40, 255].repeat(16);
+        let rgba = [220u8, 30, 40, 255].repeat(16);
         let converts = device_converts();
         let presents = device_presents();
         let surface = convert_rgba_on_device(4, 4, &rgba).unwrap();
