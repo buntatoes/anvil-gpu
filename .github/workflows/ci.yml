@@ -1,0 +1,64 @@
+# Build, test, lint, and release-build anvil-gpu on Linux and Windows.
+# Every cargo command runs with --offline: the project uses no crates from
+# outside the anvil repositories, and a registry download is a failure.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_OFFLINE: "true"
+
+jobs:
+  ci:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Check for outside crates
+        run: |
+          # Resolve offline first: most anvil repositories do not track
+          # Cargo.lock, so a fresh checkout has none until cargo writes it.
+          # Path dependencies have no source line in Cargo.lock. Registry and
+          # git dependencies do.
+          cargo metadata --offline --format-version 1 > /dev/null
+          if grep -n '^source = ' Cargo.lock; then
+            echo "Cargo.lock lists a crate from outside the anvil repositories."
+            exit 1
+          fi
+
+      - name: Build
+        run: cargo build --offline --workspace --all-targets
+
+      - name: Test
+        run: cargo test --offline --workspace
+
+      - name: Clippy
+        run: cargo clippy --offline --workspace --all-targets
+
+      - name: Release build
+        run: cargo build --offline --workspace --release
