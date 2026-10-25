@@ -8,7 +8,9 @@
 //! a draw call, including bad sizes, short buffers, odd strides, and values
 //! that are not finite. A call may return an error. It must not panic or
 //! hang, it must not touch row padding, and a device that fails must leave
-//! the same pixels as software alone.
+//! the same pixels as software alone. Every case also runs through
+//! `Compositor::open`, which on a machine with a usable device draws on it;
+//! that must give the same result and pixels as software, with no fallback.
 
 use anvil_gpu::{
     BackendKind, BlitDesc, ComposeBackend, ComposeError, Compositor, Filter, GpuColor,
@@ -462,8 +464,9 @@ impl ComposeBackend for FailingDevice {
     }
 }
 
-/// Run one call through software alone and through a failing device, then
-/// compare. Both must agree on the result and on every pixel.
+/// Run one call through software alone, through a failing device, and
+/// through `Compositor::open`, then compare. All three must agree on the
+/// result and on every pixel.
 fn run_both(
     input: &[u8],
     draw: impl Fn(&mut Compositor, &mut RgbaTarget<'_>) -> Result<(), ComposeError>,
@@ -471,6 +474,7 @@ fn run_both(
     let mut r = Reader::new(input);
     let (mut soft, width, height, stride) = target_buffer(&mut r);
     let mut dev = soft.clone();
+    let stored = soft.clone();
     let soft_result = match RgbaTarget::new(&mut soft, width, height, stride) {
         Ok(mut t) => Some(draw(&mut Compositor::software(), &mut t)),
         Err(_) => None,
@@ -483,6 +487,16 @@ fn run_both(
     assert_eq!(soft_result, dev_result);
     assert_eq!(soft, dev, "fallback pixels differ from software");
     assert!(c.fallbacks() <= 1);
+    // The same call on the real device backend, when there is one.
+    let mut gpu = Compositor::open();
+    let mut drawn = stored.clone();
+    let gpu_result = match RgbaTarget::new(&mut drawn, width, height, stride) {
+        Ok(mut t) => Some(draw(&mut gpu, &mut t)),
+        Err(_) => None,
+    };
+    assert_eq!(soft_result, gpu_result);
+    assert_eq!(soft, drawn, "device pixels differ from software");
+    assert_eq!(gpu.fallbacks(), 0, "the device fell back to software");
     if soft_result.is_some() {
         check_padding(&soft, width, height, stride);
     }
@@ -631,4 +645,32 @@ fn large_blur_on_a_large_target_stays_fast() {
     );
     // Deep inside the box the shadow is solid.
     assert_eq!(t.pixel(256, 256), Some([0, 0, 0, 255]));
+}
+
+#[test]
+fn large_blur_on_the_device_matches_and_stays_fast() {
+    // The same call through Compositor::open, which uses the device when
+    // there is one. It must finish inside the case limit and match software.
+    let draw = |c: &mut Compositor| {
+        let mut buf: Vec<u8> = (0..512 * 512 * 4).map(|i| (i % 251) as u8).collect();
+        let mut t = RgbaTarget::packed(&mut buf, 512, 512).unwrap();
+        let mut d = ShadowDesc::new(
+            GpuRect::new(-100.0, -100.0, 700.0, 700.0),
+            GpuColor::rgba(30, 60, 90, 200),
+        );
+        d.blur_radius = 1e9;
+        d.corner_radius = 40.0;
+        c.box_shadow(&mut t, &d).unwrap();
+        buf
+    };
+    let started = Instant::now();
+    let mut gpu = Compositor::open();
+    let got = draw(&mut gpu);
+    assert!(
+        started.elapsed() < CASE_LIMIT,
+        "took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(gpu.fallbacks(), 0);
+    assert!(got == draw(&mut Compositor::software()));
 }
