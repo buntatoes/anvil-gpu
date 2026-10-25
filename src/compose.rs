@@ -782,6 +782,16 @@ pub fn draw_gradient(
 /// YUV frames are limited-range BT.709, the same as [`crate::Nv12Surface`].
 /// Chroma planes are `ceil(width / 2)` by `ceil(height / 2)`, and each chroma
 /// sample covers a 2 by 2 block of luma.
+///
+/// Chroma siting: [`Filter::Bilinear`] treats each chroma sample as sitting at
+/// the center of its 2 by 2 luma block, horizontally and vertically. Most
+/// BT.709 video (MPEG-2, H.264, and HEVC with default settings) sites chroma
+/// on the left edge of the block instead, horizontally in line with the
+/// even luma column. For that video the bilinear chroma is offset by half a
+/// luma pixel to the right, which shows only as slight color fringes on
+/// sharp color edges. [`Filter::Nearest`] uses the block's chroma as is, so
+/// siting does not change it. The GLSL and HLSL blit passes use the same
+/// center siting, so all backends give the same bytes.
 #[derive(Clone, Copy, Debug)]
 pub enum VideoFrame<'f> {
     /// Straight RGBA8, `stride` bytes per row.
@@ -933,7 +943,9 @@ pub enum Filter {
     /// The texel under each destination pixel center. Exact at 1:1.
     Nearest,
     /// Two by two texels, clamped at the frame edges. RGBA is weighted by
-    /// alpha so clear texels do not darken their neighbors.
+    /// alpha so clear texels do not darken their neighbors. YUV chroma is
+    /// treated as center sited; see [`VideoFrame`] for what that means for
+    /// left-sited video.
     Bilinear,
 }
 
