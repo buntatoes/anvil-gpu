@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Buntato
 //! Tile draw device.
 //!
 //! Quads are binned into 16 by 16 tiles. Each tile that a quad clip touches is

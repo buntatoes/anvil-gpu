@@ -1,4 +1,6 @@
-// GLSL 330 core source text. Author: Buntos.
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Buntato
+// GLSL 330 core source text. Author: Buntato.
 //
 // Nothing in this repository compiles this file or creates an OpenGL or Vulkan
 // device. The crate embeds this text with include_str!. CPU code in src/lib.rs

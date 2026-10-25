@@ -49,4 +49,4 @@ The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) (Apac
 
 ## License
 
-MPL-2.0. Copyright (c) 2026 Buntos.
+MPL-2.0. Copyright (c) 2026 Buntato.

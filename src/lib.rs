@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Buntato
 //! CPU drawing of rounded boxes, box shadows, linear gradients, a shelf-packed RGBA atlas, and RGBA/NV12 conversion.
 //!
 //! CPU entry points:

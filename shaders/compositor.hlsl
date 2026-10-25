@@ -1,4 +1,6 @@
-// HLSL Shader Model 5.0 source text. Author: Buntos.
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Buntato
+// HLSL Shader Model 5.0 source text. Author: Buntato.
 //
 // Nothing in this repository compiles this file or creates a Direct3D device.
 // The crate embeds this text with include_str!. CPU code in src/lib.rs draws
