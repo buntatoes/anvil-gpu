@@ -12,7 +12,7 @@
 
 Version 0.7.0.
 
-Draw lists are counted in 16 by 16 tiles, then shaded once. The bytes match `render_frame_rgba`. On Linux the crate loads `libEGL.so.1` when that library is present and a display comes back. It does not create a GL context when that probe fails. The HLSL and GLSL files are still source text. This build does not compile them onto a device. Proof of concept.
+Draw lists are counted in 16 by 16 tiles, then shaded once on the CPU. The bytes match `render_frame_rgba`. On Linux the crate probes `libEGL.so.1` when present. On Windows it can compile `compositor.hlsl` with `d3dcompiler_47.dll` and check whether a Direct3D 11 device opens. Quad drawing itself still runs on the CPU. Proof of concept.
 
 ## What it does
 
@@ -22,8 +22,8 @@ Draw lists are counted in 16 by 16 tiles, then shaded once. The bytes match `ren
 - `sdf_rounded_box`, `sdf_box_shadow_alpha`, and `sample_linear_gradient` are the math behind that.
 - `TextureAtlas` packs rectangles and returns UV bounds.
 - `Nv12Surface` converts RGBA to NV12 and back with BT.709 coefficients, on the CPU.
-- `COMPOSITOR_HLSL` and `COMPOSITOR_GLSL` are the shader source strings. On Windows, `compile_hlsl_entry` and `probe_and_compile_d3d11_compositor` compile `COMPOSITOR_HLSL` (`VSMain` and `PSMain`) into `DXBC` bytecode via `d3dcompiler_47.dll` and probe `d3d11.dll`.
-- `sample_multi_stop_gradient` and `sample_radial_gradient` evaluate arbitrary multi-stop linear and radial color ramps.
+- `COMPOSITOR_HLSL` and `COMPOSITOR_GLSL` are the shader source strings. On Windows, `compile_hlsl_entry` and `probe_and_compile_d3d11_compositor` compile `COMPOSITOR_HLSL` with `d3dcompiler_47.dll` and check `d3d11.dll`.
+- `sample_multi_stop_gradient` and `sample_radial_gradient` sample multi-stop linear and radial gradients.
 
 ## Build
 
