@@ -196,8 +196,11 @@ mod tests {
     #[test]
     fn tiled_draw_matches_the_full_frame_and_counts_tiles() {
         let before = device_tiles_shaded();
-        let quad = GpuQuad::solid(GpuRect::new(2.0, 2.0, 20.0, 12.0), GpuColor::rgba(20, 120, 220, 255))
-            .with_rounded_border(4.0, 2.0, GpuColor::rgba(255, 180, 40, 255));
+        let quad = GpuQuad::solid(
+            GpuRect::new(2.0, 2.0, 20.0, 12.0),
+            GpuColor::rgba(20, 120, 220, 255),
+        )
+        .with_rounded_border(4.0, 2.0, GpuColor::rgba(255, 180, 40, 255));
         let shadow = GpuQuad::box_shadow(
             GpuRect::new(2.0, 2.0, 20.0, 12.0),
             1.0,
@@ -220,7 +223,10 @@ mod tests {
         let full = render_frame_rgba(32, 28, clear, &quads, None);
         assert_eq!(tiled, full);
         assert!(device_tiles_shaded() > before);
-        assert!(matches!(device.backend, GpuBackend::Tiled | GpuBackend::Egl));
+        assert!(matches!(
+            device.backend,
+            GpuBackend::Tiled | GpuBackend::Egl
+        ));
         assert!(matches!(quads[1].kind, QuadKind::Solid));
     }
 

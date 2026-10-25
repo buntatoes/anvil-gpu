@@ -543,6 +543,297 @@ pub fn sample_linear_gradient(
     lerp_color(start, end, t)
 }
 
+/// One color stop on a multi-stop linear or radial gradient ramp (`offset` in `0.0..=1.0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuGradientStop {
+    pub offset: f32,
+    pub color: GpuColor,
+}
+
+impl GpuGradientStop {
+    /// Construct a gradient stop at `offset` (`0.0..=1.0`).
+    pub const fn new(offset: f32, color: GpuColor) -> Self {
+        Self { offset, color }
+    }
+}
+
+/// Sample a multi-stop color ramp at normalized parameter `t` (`0.0..=1.0`).
+pub fn sample_multi_stop_gradient(stops: &[GpuGradientStop], t: f32) -> GpuColor {
+    if stops.is_empty() {
+        return GpuColor::rgba(0, 0, 0, 0);
+    }
+    if stops.len() == 1 {
+        return stops[0].color;
+    }
+    let clamped = t.clamp(0.0, 1.0);
+    if clamped <= stops[0].offset {
+        return stops[0].color;
+    }
+    for pair in stops.windows(2) {
+        let a = pair[0];
+        let b = pair[1];
+        if clamped <= b.offset {
+            let span = (b.offset - a.offset).max(1e-5);
+            let local_t = ((clamped - a.offset) / span).clamp(0.0, 1.0);
+            return lerp_color(a.color, b.color, local_t);
+        }
+    }
+    stops[stops.len() - 1].color
+}
+
+/// Sample an elliptical radial gradient centered at `(cx, cy)` with radii `(rx, ry)` at point `(px, py)`.
+pub fn sample_radial_gradient(
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+    px: f32,
+    py: f32,
+    stops: &[GpuGradientStop],
+) -> GpuColor {
+    let nx = (px - cx) / rx.max(0.5);
+    let ny = (py - cy) / ry.max(0.5);
+    let dist = (nx * nx + ny * ny).sqrt().clamp(0.0, 1.0);
+    sample_multi_stop_gradient(stops, dist)
+}
+
+/// Status returned by [`probe_and_compile_d3d11_compositor`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct D3d11HardwareStatus {
+    /// True when `D3D11CreateDevice` succeeded on Windows.
+    pub device_created: bool,
+    /// Negotiated D3D feature level (for example `0xb000` for `11_0`), or `0` on software fallback.
+    pub feature_level: u32,
+    /// Byte length of compiled `vs_main` DXBC bytecode.
+    pub vs_bytecode_len: usize,
+    /// Byte length of compiled `ps_main` DXBC bytecode.
+    pub ps_bytecode_len: usize,
+    /// Short backend label.
+    pub backend_label: &'static str,
+}
+
+/// Compile an HLSL Shader Model 5.0 entry point (`vs_5_0` or `ps_5_0`) into `DXBC` bytecode
+/// using `d3dcompiler_47.dll` on Windows.
+#[cfg(target_os = "windows")]
+pub fn compile_hlsl_entry(
+    hlsl_source: &str,
+    entry_point: &str,
+    profile: &str,
+) -> Result<Vec<u8>, String> {
+    use std::ffi::{CString, c_void};
+    use std::ptr::{null, null_mut};
+
+    #[repr(C)]
+    struct ID3DBlobVtbl {
+        query_interface: usize,
+        add_ref: usize,
+        release: unsafe extern "system" fn(*mut ID3DBlob) -> u32,
+        get_buffer_pointer: unsafe extern "system" fn(*mut ID3DBlob) -> *const u8,
+        get_buffer_size: unsafe extern "system" fn(*mut ID3DBlob) -> usize,
+    }
+
+    #[repr(C)]
+    struct ID3DBlob {
+        vtbl: *const ID3DBlobVtbl,
+    }
+
+    type D3DCompileFn = unsafe extern "system" fn(
+        src_data: *const u8,
+        src_data_size: usize,
+        source_name: *const i8,
+        defines: *const c_void,
+        include: *const c_void,
+        entry_point: *const i8,
+        target: *const i8,
+        flags1: u32,
+        flags2: u32,
+        code: *mut *mut ID3DBlob,
+        error_msgs: *mut *mut ID3DBlob,
+    ) -> i32;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LoadLibraryA(name: *const i8) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const i8) -> *mut c_void;
+    }
+
+    let c_entry = CString::new(entry_point).map_err(|_| "invalid entry point".to_string())?;
+    let c_profile = CString::new(profile).map_err(|_| "invalid profile".to_string())?;
+    unsafe {
+        let dll = LoadLibraryA(c"d3dcompiler_47.dll".as_ptr());
+        if dll.is_null() {
+            return Err("d3dcompiler_47.dll not available".to_string());
+        }
+        let proc = GetProcAddress(dll, c"D3DCompile".as_ptr());
+        if proc.is_null() {
+            return Err("D3DCompile symbol not found".to_string());
+        }
+        let d3d_compile: D3DCompileFn = std::mem::transmute(proc);
+        let mut code_blob: *mut ID3DBlob = null_mut();
+        let mut err_blob: *mut ID3DBlob = null_mut();
+        let hr = d3d_compile(
+            hlsl_source.as_ptr(),
+            hlsl_source.len(),
+            c"compositor.hlsl".as_ptr(),
+            null(),
+            null(),
+            c_entry.as_ptr(),
+            c_profile.as_ptr(),
+            (1 << 11) | (1 << 15),
+            0,
+            &mut code_blob,
+            &mut err_blob,
+        );
+        if hr < 0 || code_blob.is_null() {
+            let mut msg = format!("D3DCompile failed (HRESULT 0x{hr:08x})");
+            if !err_blob.is_null() {
+                let ptr = ((*(*err_blob).vtbl).get_buffer_pointer)(err_blob);
+                let len = ((*(*err_blob).vtbl).get_buffer_size)(err_blob);
+                if !ptr.is_null() && len > 0 {
+                    let slice = std::slice::from_raw_parts(ptr, len);
+                    msg = String::from_utf8_lossy(slice).trim().to_string();
+                }
+                ((*(*err_blob).vtbl).release)(err_blob);
+            }
+            return Err(msg);
+        }
+        if !err_blob.is_null() {
+            ((*(*err_blob).vtbl).release)(err_blob);
+        }
+        let ptr = ((*(*code_blob).vtbl).get_buffer_pointer)(code_blob);
+        let len = ((*(*code_blob).vtbl).get_buffer_size)(code_blob);
+        let bytes = if !ptr.is_null() && len > 0 {
+            std::slice::from_raw_parts(ptr, len).to_vec()
+        } else {
+            Vec::new()
+        };
+        ((*(*code_blob).vtbl).release)(code_blob);
+        if bytes.len() < 4 || &bytes[0..4] != b"DXBC" {
+            return Err("compiled blob missing DXBC signature".to_string());
+        }
+        Ok(bytes)
+    }
+}
+
+/// Non-Windows stub for [`compile_hlsl_entry`].
+#[cfg(not(target_os = "windows"))]
+pub fn compile_hlsl_entry(
+    _hlsl_source: &str,
+    _entry_point: &str,
+    _profile: &str,
+) -> Result<Vec<u8>, String> {
+    Err("Direct3D HLSL compilation is only supported on Windows".to_string())
+}
+
+/// Probe Direct3D 11 device creation (`d3d11.dll`) and compile [`COMPOSITOR_HLSL`]
+/// (`vs_main` and `ps_main`) into `DXBC` bytecode on Windows.
+pub fn probe_and_compile_d3d11_compositor() -> D3d11HardwareStatus {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        use std::ptr::null_mut;
+
+        #[repr(C)]
+        struct IUnknownVtbl {
+            query_interface: usize,
+            add_ref: usize,
+            release: unsafe extern "system" fn(*mut IUnknown) -> u32,
+        }
+
+        #[repr(C)]
+        struct IUnknown {
+            vtbl: *const IUnknownVtbl,
+        }
+
+        type D3D11CreateDeviceFn = unsafe extern "system" fn(
+            adapter: *mut c_void,
+            driver_type: u32,
+            software: *mut c_void,
+            flags: u32,
+            feature_levels: *const u32,
+            num_levels: u32,
+            sdk_version: u32,
+            device: *mut *mut IUnknown,
+            out_level: *mut u32,
+            context: *mut *mut IUnknown,
+        ) -> i32;
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn LoadLibraryA(name: *const i8) -> *mut c_void;
+            fn GetProcAddress(module: *mut c_void, name: *const i8) -> *mut c_void;
+        }
+
+        let vs_len = compile_hlsl_entry(COMPOSITOR_HLSL, "VSMain", "vs_5_0")
+            .map(|b| b.len())
+            .unwrap_or(0);
+        let ps_len = compile_hlsl_entry(COMPOSITOR_HLSL, "PSMain", "ps_5_0")
+            .map(|b| b.len())
+            .unwrap_or(0);
+
+        unsafe {
+            let dll = LoadLibraryA(c"d3d11.dll".as_ptr());
+            if !dll.is_null() {
+                let proc = GetProcAddress(dll, c"D3D11CreateDevice".as_ptr());
+                if !proc.is_null() {
+                    let create_dev: D3D11CreateDeviceFn = std::mem::transmute(proc);
+                    let levels = [0xb000u32];
+                    for &(driver_type, label) in &[
+                        (1u32, "Direct3D 11 Hardware (SM 5.0 DXBC)"),
+                        (5u32, "Direct3D 11 WARP (SM 5.0 DXBC)"),
+                    ] {
+                        let mut dev: *mut IUnknown = null_mut();
+                        let mut ctx: *mut IUnknown = null_mut();
+                        let mut level = 0u32;
+                        let hr = create_dev(
+                            null_mut(),
+                            driver_type,
+                            null_mut(),
+                            0,
+                            levels.as_ptr(),
+                            1,
+                            7,
+                            &mut dev,
+                            &mut level,
+                            &mut ctx,
+                        );
+                        if hr >= 0 && !dev.is_null() {
+                            if !ctx.is_null() {
+                                ((*(*ctx).vtbl).release)(ctx);
+                            }
+                            ((*(*dev).vtbl).release)(dev);
+                            return D3d11HardwareStatus {
+                                device_created: true,
+                                feature_level: level,
+                                vs_bytecode_len: vs_len,
+                                ps_bytecode_len: ps_len,
+                                backend_label: label,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        D3d11HardwareStatus {
+            device_created: false,
+            feature_level: 0,
+            vs_bytecode_len: vs_len,
+            ps_bytecode_len: ps_len,
+            backend_label: "CPU Tile Compositor Fallback",
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        D3d11HardwareStatus {
+            device_created: false,
+            feature_level: 0,
+            vs_bytecode_len: 0,
+            ps_bytecode_len: 0,
+            backend_label: "CPU Tile Compositor Fallback",
+        }
+    }
+}
+
 /// Rasterizes `quads` in painter's order into a straight RGBA8 buffer.
 ///
 /// The buffer is `width` by `height`, row-major, four bytes per pixel, cleared to `clear` (alpha included).
@@ -781,5 +1072,41 @@ mod tests {
         // Below the gradient at (10, 17), the shadow darkens the white background
         let shadow_idx = ((17 * 24 + 10) * 4) as usize;
         assert!(fb[shadow_idx] < 255);
+    }
+
+    #[test]
+    fn samples_multi_stop_and_radial_gradients_and_compiles_d3d11_hlsl() {
+        let stops = [
+            GpuGradientStop::new(0.0, GpuColor::rgba(255, 0, 0, 255)),
+            GpuGradientStop::new(0.5, GpuColor::rgba(0, 255, 0, 255)),
+            GpuGradientStop::new(1.0, GpuColor::rgba(0, 0, 255, 255)),
+        ];
+        assert_eq!(
+            sample_multi_stop_gradient(&stops, 0.0),
+            GpuColor::rgba(255, 0, 0, 255)
+        );
+        assert_eq!(
+            sample_multi_stop_gradient(&stops, 0.5),
+            GpuColor::rgba(0, 255, 0, 255)
+        );
+        assert_eq!(
+            sample_radial_gradient(10.0, 10.0, 10.0, 10.0, 10.0, 10.0, &stops),
+            GpuColor::rgba(255, 0, 0, 255)
+        );
+        assert_eq!(
+            sample_radial_gradient(10.0, 10.0, 10.0, 10.0, 20.0, 10.0, &stops),
+            GpuColor::rgba(0, 0, 255, 255)
+        );
+
+        let status = probe_and_compile_d3d11_compositor();
+        #[cfg(target_os = "windows")]
+        {
+            assert!(status.device_created);
+            assert_eq!(status.feature_level, 0xb000);
+            assert!(status.vs_bytecode_len > 64);
+            assert!(status.ps_bytecode_len > 64);
+        }
+        #[cfg(not(target_os = "windows"))]
+        assert!(!status.device_created);
     }
 }
