@@ -2,7 +2,7 @@
 # shelf atlas, and RGBA <-> NV12 conversion.
 # shaders/compositor.hlsl and shaders/compositor.glsl are included as source
 # strings; on Windows compositor.hlsl can be compiled with d3dcompiler_47.dll.
-# Callers: anvil-raster (SDF and gradients) and anvil-video (NV12 planes).
+# Callers: anvil-raster (SDF and gradients, in anvil-engine) and anvil-video (NV12 planes).
 
 [package]
 name = "anvil-gpu"
