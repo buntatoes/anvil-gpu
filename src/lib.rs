@@ -20,10 +20,15 @@
 
 #![deny(unsafe_code)]
 
+mod backend;
 mod compose;
 mod device;
 #[allow(unsafe_code)]
 mod sys;
+pub use backend::{
+    BackendKind, ComposeBackend, Compositor, HardwareApi, HardwareProbe, SoftwareBackend,
+    probe_hardware, select_backend,
+};
 pub use compose::{
     BlitDesc, Bounds, ComposeError, Filter, GradientDesc, GradientShape, MAX_BLUR_RADIUS,
     MAX_GRADIENT_STOPS, MAX_SIDE, RgbaTarget, ShadowDesc, VideoFrame, bt709_yuv_f32_to_rgb,
@@ -54,7 +59,8 @@ pub const PASSES_GLSL: &str = include_str!("../shaders/passes.glsl");
 /// HLSL Shader Model 5.0 compositor passes from `shaders/passes.hlsl`, the same
 /// passes as [`PASSES_GLSL`].
 ///
-/// Nothing in this crate compiles or runs it yet.
+/// On Windows, [`probe_hardware`] compiles every entry in [`PASS_ENTRY_POINTS`]
+/// to `DXBC`. Nothing runs the bytecode yet.
 pub const PASSES_HLSL: &str = include_str!("../shaders/passes.hlsl");
 
 /// Entry points and profiles in [`PASSES_HLSL`].

@@ -133,6 +133,26 @@ impl<'a> RgbaTarget<'a> {
         let i = self.offset(x, y);
         &mut self.pixels[i..i + 4]
     }
+
+    /// Copy of the pixels inside `bounds`, row by row.
+    pub(crate) fn save(&self, bounds: Bounds) -> Vec<u8> {
+        let row = (bounds.width() as usize) * 4;
+        let mut out = Vec::with_capacity(row * bounds.height() as usize);
+        for y in bounds.y0..bounds.y1 {
+            let i = self.offset(bounds.x0, y);
+            out.extend_from_slice(&self.pixels[i..i + row]);
+        }
+        out
+    }
+
+    /// Puts back pixels taken by [`RgbaTarget::save`] with the same bounds.
+    pub(crate) fn restore(&mut self, bounds: Bounds, saved: &[u8]) {
+        let row = (bounds.width() as usize) * 4;
+        for (n, y) in (bounds.y0..bounds.y1).enumerate() {
+            let i = self.offset(bounds.x0, y);
+            self.pixels[i..i + row].copy_from_slice(&saved[n * row..(n + 1) * row]);
+        }
+    }
 }
 
 /// Pixel rectangle inside a target. `x1` and `y1` are exclusive.
@@ -360,6 +380,14 @@ fn plan_shadow(
     }))
 }
 
+/// Pixels a shadow may change, or `None` when it draws nothing.
+pub(crate) fn shadow_bounds(
+    target: &RgbaTarget<'_>,
+    desc: &ShadowDesc,
+) -> Result<Option<Bounds>, ComposeError> {
+    Ok(plan_shadow(target, desc)?.map(|p| p.out))
+}
+
 /// One box pass: `dst[i]` is the mean of `src[i - r..=i + r]`, zero outside.
 fn box_blur_line(src: &[f32], dst: &mut [f32], r: usize) {
     let n = src.len();
@@ -540,6 +568,14 @@ fn plan_gradient(
         return Ok(None);
     };
     Ok(fill.intersect(area).map(|b| (b, stops)))
+}
+
+/// Pixels a gradient may change, or `None` when it draws nothing.
+pub(crate) fn gradient_bounds(
+    target: &RgbaTarget<'_>,
+    desc: &GradientDesc<'_>,
+) -> Result<Option<Bounds>, ComposeError> {
+    Ok(plan_gradient(target, desc)?.map(|(b, _)| b))
 }
 
 /// Stop parameter of a linear gradient at a point.
