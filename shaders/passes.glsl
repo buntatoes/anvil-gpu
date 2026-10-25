@@ -3,10 +3,11 @@
 // GLSL 330 core compositor passes. Author: Buntato.
 //
 // These passes are the device side of src/compose.rs. They do the same math
-// in the same order, so a device that runs them matches the software results
-// within one step per channel. Nothing in this repository runs them yet: the
-// crate embeds this text with include_str! and the Linux probe does not create
-// a GL context. See README.md for what runs where and how they were checked.
+// in the same order, and the shadow mask is blurred in exact fixed point, so
+// a device that follows IEEE f32 rules gives the same bytes as the software
+// passes. On Linux, src/gpu_gl.rs builds one program per pass in an OpenGL
+// 3.3 core context and draws a self-test scene; the device is only used when
+// that scene matches the software bytes. See README.md for what runs where.
 //
 // Compile once per pass with VERTEX_SHADER, or with FRAGMENT_SHADER plus one
 // PASS_* symbol:

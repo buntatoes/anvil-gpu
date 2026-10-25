@@ -4,15 +4,15 @@
 //!
 //! [`SoftwareBackend`] is always there and is the reference. A device backend
 //! is used only when [`select_backend`] says the probe found a usable device,
-//! the shader passes compiled, and a draw submission path exists. Any device
-//! error puts the touched pixels back, drops the device for good, and redraws
-//! the same call in software, so the caller always gets the software result.
+//! the shader passes compiled, and a self-test scene drawn on the device
+//! matched the software bytes exactly. Any device error puts the touched
+//! pixels back, drops the device for good, and redraws the same call in
+//! software, so the caller always gets the software result.
 //!
-//! What is real today: the probe ([`probe_hardware`]) and, on Windows, the
-//! `DXBC` compile of every pass in [`crate::PASSES_HLSL`]. What is not written
-//! yet: uploading a target to a device, running the passes, and reading the
-//! result back. Until it is, [`HardwareProbe::submit_ready`] is false and
-//! [`Compositor::open`] always draws in software.
+//! On Linux the device is OpenGL 3.3 core through EGL: the passes in
+//! [`crate::PASSES_GLSL`] run into offscreen textures and are read back.
+//! On other platforms there is no device draw path, so [`Compositor::open`]
+//! draws in software.
 
 use std::sync::OnceLock;
 
@@ -106,18 +106,20 @@ pub enum HardwareApi {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HardwareProbe {
     pub api: HardwareApi,
-    /// EGL: `eglInitialize` succeeded on the default display. Direct3D: a
-    /// hardware or WARP device was created. A display or device can still be
-    /// a software driver; the probe cannot tell.
+    /// EGL: a display initialized (surfaceless platform first, then the
+    /// default display). Direct3D: a hardware or WARP device was created. A
+    /// display or device can still be a software driver; the probe cannot
+    /// tell.
     pub device_opened: bool,
     /// EGL version, or the Direct3D feature level as `(11, 0)`. `(0, 0)` when
     /// nothing opened.
     pub api_version: (i32, i32),
-    /// Every compositor pass compiled for this API. Only Direct3D can be
-    /// checked today, through `D3DCompile`. GLSL needs a live context, which
-    /// the probe does not create, so this is false on Linux.
+    /// A context was made and every compositor pass compiled for this API.
+    /// On Linux that is an OpenGL 3.3 core context and the GLSL passes; on
+    /// Windows the `DXBC` compile of every HLSL entry point.
     pub passes_compiled: bool,
-    /// A device draw path exists in this build. False in this version.
+    /// A device draw path exists in this build and its self-test scene
+    /// matched the software bytes exactly.
     pub submit_ready: bool,
 }
 
@@ -140,16 +142,17 @@ impl HardwareProbe {
         } else if !self.device_opened {
             Some("no display or device opened")
         } else if !self.passes_compiled {
-            Some("compositor passes not compiled for this API")
+            Some("no device context, or the compositor passes did not compile")
         } else if !self.submit_ready {
-            Some("device draw submission is not written yet")
+            Some("no device draw path, or its self-test did not match software")
         } else {
             None
         }
     }
 }
 
-/// Software unless the probe found a device, compiled passes, and a draw path.
+/// Software unless the probe found a device, compiled passes, and a draw path
+/// whose self-test matched.
 pub fn select_backend(probe: &HardwareProbe) -> BackendKind {
     if probe.reason().is_none() {
         BackendKind::Hardware
@@ -159,6 +162,10 @@ pub fn select_backend(probe: &HardwareProbe) -> BackendKind {
 }
 
 /// Probe the platform once and cache the answer for the process.
+///
+/// On Linux this opens the EGL display, makes an OpenGL context, builds the
+/// passes, and draws the self-test scene, which takes a moment on the first
+/// call. A driver that does not answer within 20 seconds counts as missing.
 pub fn probe_hardware() -> HardwareProbe {
     static PROBE: OnceLock<HardwareProbe> = OnceLock::new();
     *PROBE.get_or_init(run_probe)
@@ -166,18 +173,20 @@ pub fn probe_hardware() -> HardwareProbe {
 
 #[cfg(target_os = "linux")]
 fn run_probe() -> HardwareProbe {
-    match crate::device::egl_info() {
-        Some(info) => HardwareProbe {
-            api: HardwareApi::Egl,
-            device_opened: true,
-            api_version: (info.major, info.minor),
-            passes_compiled: false,
-            submit_ready: false,
-        },
-        None => HardwareProbe {
+    use crate::gpu_gl::GlStop;
+    let Some(display) = crate::sys_gl::egl_display() else {
+        return HardwareProbe {
             api: HardwareApi::Egl,
             ..HardwareProbe::none()
-        },
+        };
+    };
+    let stop = crate::gpu_gl::shared().err();
+    HardwareProbe {
+        api: HardwareApi::Egl,
+        device_opened: true,
+        api_version: display.version,
+        passes_compiled: matches!(stop, None | Some(GlStop::SelfTest)),
+        submit_ready: stop.is_none(),
     }
 }
 
@@ -208,10 +217,17 @@ fn run_probe() -> HardwareProbe {
 }
 
 /// The device backend for a probe that selected hardware.
-///
-/// There is no device draw path in this version, so this is always `None`.
-/// [`select_backend`] cannot pick hardware while `submit_ready` is false, so
-/// this is not reached by [`Compositor::open`] today.
+#[cfg(target_os = "linux")]
+fn open_device(_probe: &HardwareProbe) -> Option<Box<dyn ComposeBackend + Send>> {
+    let device = crate::gpu_gl::shared().ok()?;
+    Some(Box::new(crate::gpu::DeviceBackend::new(
+        device,
+        crate::gpu::Faults::default(),
+    )))
+}
+
+/// No device draw path on this platform.
+#[cfg(not(target_os = "linux"))]
 fn open_device(_probe: &HardwareProbe) -> Option<Box<dyn ComposeBackend + Send>> {
     None
 }
@@ -381,11 +397,10 @@ mod tests {
                 }
             }
         }
-        // No platform has a draw path in this version.
+        // The probe is cached, and open follows it.
         let found = probe_hardware();
-        assert!(!found.submit_ready);
-        assert_eq!(select_backend(&found), BackendKind::Software);
-        assert_eq!(Compositor::open().active_backend(), BackendKind::Software);
+        assert!(!found.submit_ready || found.passes_compiled);
+        assert_eq!(Compositor::open().active_backend(), select_backend(&found));
         assert_eq!(probe_hardware(), found);
         // The Windows runners have at least WARP, and the passes must compile there.
         #[cfg(target_os = "windows")]

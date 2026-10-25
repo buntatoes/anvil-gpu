@@ -312,22 +312,23 @@ pub fn shadow_pass_radius(blur_radius: f32) -> u32 {
     (((blur * blur + 1.0).sqrt() - 1.0) * 0.5).round() as u32
 }
 
-struct ShadowPlan {
-    out: Bounds,
+/// Where a shadow draws and the mask it needs. The device passes use the same plan.
+pub(crate) struct ShadowPlan {
+    pub(crate) out: Bounds,
     // Mask origin in target pixels. It may lie outside the target.
-    mask_x: i64,
-    mask_y: i64,
-    mask_w: usize,
-    mask_h: usize,
-    radius: usize,
-    cx: f32,
-    cy: f32,
-    half_w: f32,
-    half_h: f32,
-    corner: f32,
+    pub(crate) mask_x: i64,
+    pub(crate) mask_y: i64,
+    pub(crate) mask_w: usize,
+    pub(crate) mask_h: usize,
+    pub(crate) radius: usize,
+    pub(crate) cx: f32,
+    pub(crate) cy: f32,
+    pub(crate) half_w: f32,
+    pub(crate) half_h: f32,
+    pub(crate) corner: f32,
 }
 
-fn plan_shadow(
+pub(crate) fn plan_shadow(
     target: &RgbaTarget<'_>,
     desc: &ShadowDesc,
 ) -> Result<Option<ShadowPlan>, ComposeError> {
@@ -690,12 +691,12 @@ impl Stops {
         })
     }
 
-    fn as_slice(&self) -> &[GpuGradientStop] {
+    pub(crate) fn as_slice(&self) -> &[GpuGradientStop] {
         &self.items[..self.len]
     }
 }
 
-fn plan_gradient(
+pub(crate) fn plan_gradient(
     target: &RgbaTarget<'_>,
     desc: &GradientDesc<'_>,
 ) -> Result<Option<(Bounds, Stops)>, ComposeError> {

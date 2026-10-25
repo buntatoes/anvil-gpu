@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Buntato
-//! CPU drawing for the compositor, with the same passes written out as shaders.
+//! Compositor passes on the CPU, and the same passes on a GPU where one works.
 //!
 //! - [`Compositor`] draws blurred box shadows, linear and radial gradients, and
-//!   RGBA, NV12, and I420 frame blits. It can try a device backend first and
+//!   RGBA, NV12, and I420 frame blits. It tries a device backend first and
 //!   falls back to [`SoftwareBackend`] on any device error. [`probe_hardware`]
-//!   and [`select_backend`] decide whether a device is used; today no device
-//!   draw path exists, so everything is drawn on the CPU.
+//!   and [`select_backend`] decide whether a device is used. On Linux the
+//!   device is OpenGL 3.3 core through EGL, used only when its self-test
+//!   scene matches the CPU bytes exactly; elsewhere everything is drawn on
+//!   the CPU.
 //! - [`render_frame_rgba`] rasterizes [`GpuQuad`] values into a straight RGBA8 framebuffer.
 //! - [`sdf_rounded_box`], [`sdf_box_shadow_alpha`], and [`sample_linear_gradient`] are the signed-distance, shadow, and gradient helpers.
 //! - [`TextureAtlas`] shelf-packs straight RGBA8 images and samples them.
@@ -18,16 +20,23 @@
 //! [`COMPOSITOR_HLSL`], [`COMPOSITOR_GLSL`], [`PASSES_HLSL`], and [`PASSES_GLSL`] are `include_str!` source strings.
 //! [`GpuDevice`] shades quads in 16 by 16 tiles and probes `libEGL.so.1` on Linux.
 //!
-//! All `unsafe` code lives in one private module, `sys`, which wraps the few
-//! system calls the crate makes (EGL on Linux, Direct3D on Windows).
+//! All `unsafe` code lives in private modules that only wrap system calls:
+//! `sys` (the Direct3D probe on Windows) and `sys_gl` (EGL and OpenGL on
+//! Linux). The rest of the crate denies `unsafe`.
 
 #![deny(unsafe_code)]
 
 mod backend;
 mod compose;
 mod device;
+mod gpu;
+#[cfg(target_os = "linux")]
+mod gpu_gl;
 #[allow(unsafe_code)]
 mod sys;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod sys_gl;
 pub use backend::{
     BackendKind, ComposeBackend, Compositor, HardwareApi, HardwareProbe, SoftwareBackend,
     probe_hardware, select_backend,
@@ -42,6 +51,7 @@ pub use device::{
     GpuBackend, GpuDevice, composite_rgba_frame, convert_rgba_on_device, device_converts,
     device_presents, device_tiles_shaded, present_nv12_on_device,
 };
+pub use gpu::device_pass_draws;
 
 /// HLSL Shader Model 5.0 source text from `shaders/compositor.hlsl`.
 ///
@@ -57,7 +67,8 @@ pub const COMPOSITOR_GLSL: &str = include_str!("../shaders/compositor.glsl");
 /// GLSL 330 core compositor passes from `shaders/passes.glsl`: shadow mask, box
 /// blur, shadow paint, gradient, and RGBA, NV12, and I420 blits.
 ///
-/// Embedded with `include_str!`. Nothing in this crate compiles or runs it yet.
+/// Embedded with `include_str!`. On Linux the OpenGL device backend builds
+/// one program per pass from it and runs them.
 pub const PASSES_GLSL: &str = include_str!("../shaders/passes.glsl");
 
 /// HLSL Shader Model 5.0 compositor passes from `shaders/passes.hlsl`, the same

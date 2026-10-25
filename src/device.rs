@@ -8,7 +8,6 @@
 //! library leaves the backend on the tile pipeline. This file does not ship a
 //! key or a personal path.
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{GpuColor, GpuQuad, GpuRect, Nv12Surface, TextureAtlas, render_frame_rgba};
@@ -24,7 +23,9 @@ static DEVICE_PRESENTS: AtomicU64 = AtomicU64::new(0);
 pub enum GpuBackend {
     /// 16 by 16 tiles. This is the path the tests run.
     Tiled,
-    /// `libEGL.so.1` loaded and `eglInitialize` succeeded on the default display.
+    /// `libEGL.so.1` loaded and an EGL display initialized (the surfaceless
+    /// platform when the driver has it, else the default display). Quads are
+    /// still shaded in tiles on the CPU.
     Egl,
 }
 
@@ -153,18 +154,18 @@ fn clip_one(quad: &GpuQuad, tile: GpuRect) -> Option<GpuQuad> {
     Some(next)
 }
 
-/// True when the cached EGL probe initialized a display.
+/// True when this process has an EGL display.
+///
+/// The display is opened once per process and kept, so opening a
+/// [`GpuDevice`] per draw does not load the library each time.
+#[cfg(target_os = "linux")]
 fn egl_display_opens() -> bool {
-    egl_info().is_some()
+    crate::sys_gl::egl_display().is_some()
 }
 
-/// EGL version from the first probe in this process, or `None`.
-///
-/// The probe runs once. Later calls read the cached answer, so opening a
-/// [`GpuDevice`] per draw no longer loads the library each time.
-pub(crate) fn egl_info() -> Option<crate::sys::EglInfo> {
-    static EGL: OnceLock<Option<crate::sys::EglInfo>> = OnceLock::new();
-    *EGL.get_or_init(crate::sys::egl_probe)
+#[cfg(not(target_os = "linux"))]
+fn egl_display_opens() -> bool {
+    false
 }
 
 #[cfg(test)]

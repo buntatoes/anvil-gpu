@@ -1,97 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Buntato
-//! Every system call this crate makes, in one place.
+//! The Windows probe calls: `D3DCompile` and a throwaway Direct3D 11 device.
 //!
-//! This is the only module allowed to use `unsafe`. The rest of the crate is
-//! built with `#![deny(unsafe_code)]`. Each block below says why it is sound.
+//! This module, `sys_gl` (EGL and OpenGL on Linux), and `sys_d3d` (the
+//! Direct3D 11 draw path on Windows) are the only modules allowed to use
+//! `unsafe`. The rest of the crate is built with `#![deny(unsafe_code)]`.
+//! Each block below says why it is sound.
 //!
-//! - Linux: `dlopen` of `libEGL.so.1`, then `eglGetDisplay` and
-//!   `eglInitialize` on the default display. Nothing is drawn.
-//! - Windows: `LoadLibraryA` and `GetProcAddress` for `d3dcompiler_47.dll`
-//!   (`D3DCompile`) and `d3d11.dll` (`D3D11CreateDevice`). The device is
-//!   released again right away.
+//! - `LoadLibraryA` and `GetProcAddress` for `d3dcompiler_47.dll`
+//!   (`D3DCompile`) and `d3d11.dll` (`D3D11CreateDevice`). The probe device
+//!   is released again right away.
 //!
 //! No call here keeps a pointer past the function that made it, and no call
 //! hands out a raw pointer to the rest of the crate.
-
-/// What the EGL probe found.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct EglInfo {
-    pub major: i32,
-    pub minor: i32,
-}
-
-/// Load `libEGL.so.1` and initialize the default display.
-///
-/// Returns `None` when the library, a symbol, or the display is missing, or
-/// when `eglInitialize` fails. The library stays loaded and the display stays
-/// initialized for the rest of the process. Unloading a GL driver while it may
-/// still own threads is not safe, and `eglTerminate` would also tear down the
-/// display for any other user in the same process. The caller probes once and
-/// caches the answer, so this runs at most once per process.
-#[cfg(target_os = "linux")]
-pub(crate) fn egl_probe() -> Option<EglInfo> {
-    use core::ffi::{c_char, c_int, c_uint, c_void};
-
-    // Declarations from <dlfcn.h>. build.rs links libdl.
-    unsafe extern "C" {
-        fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-    }
-    const RTLD_NOW: c_int = 2;
-    const RTLD_LOCAL: c_int = 0;
-    type GetDisplayFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
-    type InitializeFn = unsafe extern "C" fn(*mut c_void, *mut c_int, *mut c_int) -> c_uint;
-
-    // SAFETY: the name is a NUL-terminated literal and dlopen does not keep it.
-    // A null return is handled below.
-    let handle = unsafe { dlopen(c"libEGL.so.1".as_ptr(), RTLD_NOW | RTLD_LOCAL) };
-    if handle.is_null() {
-        return None;
-    }
-    // SAFETY: `handle` came from a successful dlopen and is never closed. The
-    // symbol names are NUL-terminated literals.
-    let (get_display, initialize) = unsafe {
-        (
-            dlsym(handle, c"eglGetDisplay".as_ptr()),
-            dlsym(handle, c"eglInitialize".as_ptr()),
-        )
-    };
-    if get_display.is_null() || initialize.is_null() {
-        return None;
-    }
-    // SAFETY: both pointers are non-null exports of libEGL with exactly these C
-    // signatures in the EGL 1.4 and 1.5 headers (EGLDisplay is a pointer,
-    // EGLint is int, EGLBoolean is unsigned int). Function pointers and data
-    // pointers have the same size on every Linux target Rust supports.
-    let (get_display, initialize) = unsafe {
-        (
-            std::mem::transmute::<*mut c_void, GetDisplayFn>(get_display),
-            std::mem::transmute::<*mut c_void, InitializeFn>(initialize),
-        )
-    };
-    // SAFETY: EGL_DEFAULT_DISPLAY is a null native display. eglGetDisplay
-    // returns EGL_NO_DISPLAY (null) when there is nothing to open.
-    let display = unsafe { get_display(core::ptr::null_mut()) };
-    if display.is_null() {
-        return None;
-    }
-    let mut major: c_int = 0;
-    let mut minor: c_int = 0;
-    // SAFETY: `display` is a live EGLDisplay from the call above. `major` and
-    // `minor` are valid for writes for the whole call and are not kept.
-    let ok = unsafe { initialize(display, &mut major, &mut minor) };
-    if ok == 0 {
-        return None;
-    }
-    Some(EglInfo { major, minor })
-}
-
-/// EGL is only probed on Linux.
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn egl_probe() -> Option<EglInfo> {
-    None
-}
 
 /// Compile one HLSL entry point with `D3DCompile` from `d3dcompiler_47.dll`.
 ///
