@@ -388,76 +388,219 @@ pub(crate) fn shadow_bounds(
     Ok(plan_shadow(target, desc)?.map(|p| p.out))
 }
 
-/// One box pass: `dst[i]` is the mean of `src[i - r..=i + r]`, zero outside.
-fn box_blur_line(src: &[f32], dst: &mut [f32], r: usize) {
-    let n = src.len();
-    let width = (2 * r + 1) as f64;
-    let mut acc: f64 = src[..n.min(r + 1)].iter().map(|&v| v as f64).sum();
-    for i in 0..n {
-        dst[i] = (acc / width).max(0.0) as f32;
-        if i + r + 1 < n {
-            acc += src[i + r + 1] as f64;
+/// One box pass over a line of `n` values, fed one value at a time.
+///
+/// Output `i` is the mean of inputs `i - r..=i + r`, with zeros outside the
+/// line. The running sum is updated in a fixed order (add the value entering
+/// the window, then drop the one leaving it), so the same inputs always give
+/// the same bits, whether a whole line is blurred at once or values arrive one
+/// row at a time.
+#[derive(Clone, Debug)]
+struct BoxRun {
+    n: usize,
+    r: usize,
+    width: f64,
+    acc: f64,
+    // Last 2r + 2 inputs, by index modulo the length.
+    ring: Vec<f32>,
+    pushed: usize,
+    emitted: usize,
+}
+
+impl BoxRun {
+    fn new(n: usize, r: usize) -> Self {
+        Self {
+            n,
+            r,
+            width: (2 * r + 1) as f64,
+            acc: 0.0,
+            ring: vec![0.0; 2 * r + 2],
+            pushed: 0,
+            emitted: 0,
         }
-        if i >= r {
-            acc -= src[i - r] as f64;
+    }
+
+    fn input(&self, k: usize) -> f64 {
+        self.ring[k % self.ring.len()] as f64
+    }
+
+    fn emit(&mut self) -> f32 {
+        self.emitted += 1;
+        (self.acc / self.width).max(0.0) as f32
+    }
+
+    /// Feed input `pushed`. Returns the next output once it is known.
+    fn push(&mut self, v: f32) -> Option<f32> {
+        debug_assert!(self.pushed < self.n);
+        let k = self.pushed;
+        let slot = k % self.ring.len();
+        self.pushed += 1;
+        let first = self.r.min(self.n - 1);
+        if k <= first {
+            self.acc += v as f64;
+            self.ring[slot] = v;
+            return (k == first).then(|| self.emit());
         }
+        // `v` is input i + r + 1 for output i = k - r - 1.
+        let i = k - self.r - 1;
+        self.acc += v as f64;
+        if i >= self.r {
+            self.acc -= self.input(i - self.r);
+        }
+        self.ring[slot] = v;
+        Some(self.emit())
+    }
+
+    /// After all `n` inputs: the remaining outputs, one per call.
+    fn finish(&mut self) -> Option<f32> {
+        debug_assert_eq!(self.pushed, self.n);
+        if self.emitted >= self.n {
+            return None;
+        }
+        let i = self.emitted - 1;
+        if i >= self.r {
+            self.acc -= self.input(i - self.r);
+        }
+        Some(self.emit())
     }
 }
 
-/// Three box passes along rows, then three along columns.
-fn blur_mask(mask: &mut [f32], w: usize, h: usize, r: usize) {
-    if r == 0 || w == 0 || h == 0 {
+/// One box pass over a whole line.
+fn box_blur_line(src: &[f32], dst: &mut [f32], r: usize) {
+    if src.is_empty() {
         return;
     }
-    let mut a = vec![0f32; w.max(h)];
-    let mut b = vec![0f32; w.max(h)];
-    for row in mask.chunks_exact_mut(w) {
-        box_blur_line(row, &mut a[..w], r);
-        box_blur_line(&a[..w], &mut b[..w], r);
-        box_blur_line(&b[..w], row, r);
+    let mut run = BoxRun::new(src.len(), r);
+    let mut out = 0;
+    for &v in src {
+        if let Some(o) = run.push(v) {
+            dst[out] = o;
+            out += 1;
+        }
     }
-    for x in 0..w {
-        for y in 0..h {
-            a[y] = mask[y * w + x];
+    while let Some(o) = run.finish() {
+        dst[out] = o;
+        out += 1;
+    }
+}
+
+/// Feed `v` through a chain of passes. Returns the last pass's output, if any.
+fn through(passes: &mut [BoxRun], v: f32) -> Option<f32> {
+    let mut v = v;
+    for pass in passes {
+        v = pass.push(v)?;
+    }
+    Some(v)
+}
+
+/// Next output of a chain whose first pass has had all its inputs.
+fn drain(passes: &mut [BoxRun]) -> Option<f32> {
+    for k in 0..passes.len() {
+        while let Some(v) = passes[k].finish() {
+            if let Some(o) = through(&mut passes[k + 1..], v) {
+                return Some(o);
+            }
         }
-        box_blur_line(&a[..h], &mut b[..h], r);
-        let (b_line, a_line) = (&b[..h], &mut a[..h]);
-        box_blur_line(b_line, a_line, r);
-        box_blur_line(&a[..h], &mut b[..h], r);
-        for y in 0..h {
-            mask[y * w + x] = b[y];
+    }
+    None
+}
+
+/// Rows of the shadow mask: coverage, then three box passes along the row.
+struct MaskRows<'p> {
+    plan: &'p ShadowPlan,
+    coverage: Vec<f32>,
+    a: Vec<f32>,
+}
+
+impl<'p> MaskRows<'p> {
+    fn new(plan: &'p ShadowPlan) -> Self {
+        Self {
+            plan,
+            coverage: vec![0.0; plan.mask_w],
+            a: vec![0.0; plan.mask_w],
         }
+    }
+
+    /// Mask row `j`, blurred along x when the plan has a radius.
+    fn row(&mut self, j: usize) -> &[f32] {
+        let plan = self.plan;
+        // Coverage of the rounded box, the same one-pixel ramp quads use.
+        let sy = (plan.mask_y + j as i64) as f32 + 0.5 - plan.cy;
+        for (i, c) in self.coverage.iter_mut().enumerate() {
+            let sx = (plan.mask_x + i as i64) as f32 + 0.5 - plan.cx;
+            let d = sdf_rounded_box(sx, sy, plan.half_w, plan.half_h, plan.corner);
+            *c = (0.5 - d).clamp(0.0, 1.0);
+        }
+        if plan.radius > 0 {
+            box_blur_line(&self.coverage, &mut self.a, plan.radius);
+            box_blur_line(&self.a, &mut self.coverage, plan.radius);
+            self.a.copy_from_slice(&self.coverage);
+            box_blur_line(&self.a, &mut self.coverage, plan.radius);
+        }
+        &self.coverage
     }
 }
 
 /// Draw a blurred box shadow in software.
+///
+/// The mask is never held whole. Rows are made one at a time, blurred along
+/// x, and streamed through three box passes per output column, so memory is
+/// about `3 * (2r + 2)` floats per output column plus a few mask rows, where
+/// `r` is [`shadow_pass_radius`]. At the largest blur and a 16384 pixel wide
+/// target that is under 60 MB. The result is the same, bit for bit, as
+/// blurring the whole mask at once.
 pub fn draw_box_shadow(target: &mut RgbaTarget<'_>, desc: &ShadowDesc) -> Result<(), ComposeError> {
     let Some(plan) = plan_shadow(target, desc)? else {
         return Ok(());
     };
-    // Pass 1: coverage of the rounded box, the same one-pixel ramp quads use.
-    let mut mask = vec![0f32; plan.mask_w * plan.mask_h];
-    for j in 0..plan.mask_h {
-        let sy = (plan.mask_y + j as i64) as f32 + 0.5 - plan.cy;
-        for i in 0..plan.mask_w {
-            let sx = (plan.mask_x + i as i64) as f32 + 0.5 - plan.cx;
-            let d = sdf_rounded_box(sx, sy, plan.half_w, plan.half_h, plan.corner);
-            mask[j * plan.mask_w + i] = (0.5 - d).clamp(0.0, 1.0);
-        }
-    }
-    // Passes 2 and 3: separable blur.
-    blur_mask(&mut mask, plan.mask_w, plan.mask_h, plan.radius);
-    // Pass 4: paint the color through the mask.
     let margin = 3 * plan.radius;
-    for y in plan.out.y0..plan.out.y1 {
-        let j = (y - plan.out.y0) as usize + margin;
-        for x in plan.out.x0..plan.out.x1 {
-            let i = (x - plan.out.x0) as usize + margin;
-            let cov = mask[j * plan.mask_w + i];
+    let out_w = plan.out.width() as usize;
+    let mut rows = MaskRows::new(&plan);
+    let paint = |target: &mut RgbaTarget<'_>, j: usize, line: &[f32]| {
+        // Mask row j lands on target row out.y0 + j - margin when inside the region.
+        if j < margin || j >= margin + plan.out.height() as usize {
+            return;
+        }
+        let y = plan.out.y0 + (j - margin) as u32;
+        for (n, &cov) in line.iter().enumerate() {
             if cov > 0.0 {
-                over_straight(target.px_mut(x, y), desc.color, cov);
+                over_straight(target.px_mut(plan.out.x0 + n as u32, y), desc.color, cov);
             }
         }
+    };
+    if plan.radius == 0 {
+        for j in 0..plan.mask_h {
+            let line = rows.row(j)[margin..margin + out_w].to_vec();
+            paint(target, j, &line);
+        }
+        return Ok(());
+    }
+    // Three box passes down each output column, fed one mask row at a time.
+    let mut columns: Vec<[BoxRun; 3]> = (0..out_w)
+        .map(|_| std::array::from_fn(|_| BoxRun::new(plan.mask_h, plan.radius)))
+        .collect();
+    let mut line = vec![0f32; out_w];
+    let mut next = 0;
+    for j in 0..plan.mask_h {
+        let row = rows.row(j);
+        let mut ready = false;
+        for (n, passes) in columns.iter_mut().enumerate() {
+            if let Some(v) = through(passes, row[margin + n]) {
+                line[n] = v;
+                ready = true;
+            }
+        }
+        if ready {
+            paint(target, next, &line);
+            next += 1;
+        }
+    }
+    while next < plan.mask_h {
+        for (n, passes) in columns.iter_mut().enumerate() {
+            line[n] = drain(passes).unwrap_or(0.0);
+        }
+        paint(target, next, &line);
+        next += 1;
     }
     Ok(())
 }
@@ -1086,6 +1229,135 @@ mod tests {
         let area = 18.0 * 12.0 - (4.0 - std::f64::consts::PI) * 16.0;
         let got = sum as f64 / 255.0;
         assert!((got - area).abs() < 3.0, "mass {got} vs {area}");
+    }
+
+    // The whole-mask blur from 0.8.0, kept as the reference for the row by
+    // row version.
+    fn whole_line(src: &[f32], dst: &mut [f32], r: usize) {
+        let n = src.len();
+        let width = (2 * r + 1) as f64;
+        let mut acc: f64 = src[..n.min(r + 1)].iter().map(|&v| v as f64).sum();
+        for i in 0..n {
+            dst[i] = (acc / width).max(0.0) as f32;
+            if i + r + 1 < n {
+                acc += src[i + r + 1] as f64;
+            }
+            if i >= r {
+                acc -= src[i - r] as f64;
+            }
+        }
+    }
+
+    fn whole_mask_shadow(target: &mut RgbaTarget<'_>, desc: &ShadowDesc) {
+        let Some(plan) = plan_shadow(target, desc).unwrap() else {
+            return;
+        };
+        let (w, h, r) = (plan.mask_w, plan.mask_h, plan.radius);
+        let mut mask = vec![0f32; w * h];
+        for j in 0..h {
+            let sy = (plan.mask_y + j as i64) as f32 + 0.5 - plan.cy;
+            for i in 0..w {
+                let sx = (plan.mask_x + i as i64) as f32 + 0.5 - plan.cx;
+                let d = sdf_rounded_box(sx, sy, plan.half_w, plan.half_h, plan.corner);
+                mask[j * w + i] = (0.5 - d).clamp(0.0, 1.0);
+            }
+        }
+        if r > 0 {
+            let mut a = vec![0f32; w.max(h)];
+            let mut b = vec![0f32; w.max(h)];
+            for row in mask.chunks_exact_mut(w) {
+                whole_line(row, &mut a[..w], r);
+                whole_line(&a[..w], &mut b[..w], r);
+                whole_line(&b[..w], row, r);
+            }
+            for x in 0..w {
+                for y in 0..h {
+                    a[y] = mask[y * w + x];
+                }
+                whole_line(&a[..h], &mut b[..h], r);
+                whole_line(&b[..h], &mut a[..h], r);
+                whole_line(&a[..h], &mut b[..h], r);
+                for y in 0..h {
+                    mask[y * w + x] = b[y];
+                }
+            }
+        }
+        let margin = 3 * r;
+        for y in plan.out.y0..plan.out.y1 {
+            let j = (y - plan.out.y0) as usize + margin;
+            for x in plan.out.x0..plan.out.x1 {
+                let i = (x - plan.out.x0) as usize + margin;
+                let cov = mask[j * w + i];
+                if cov > 0.0 {
+                    over_straight(target.px_mut(x, y), desc.color, cov);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_box_pass_matches_the_whole_line_bit_for_bit() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..400 {
+            let n = 1 + (next() % 90) as usize;
+            let r = (next() % 40) as usize;
+            let src: Vec<f32> = (0..n).map(|_| (next() % 10_000) as f32 / 9_999.0).collect();
+            let mut want = vec![0f32; n];
+            let mut got = vec![0f32; n];
+            whole_line(&src, &mut want, r);
+            box_blur_line(&src, &mut got, r);
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&got), bits(&want), "n {n} r {r}");
+        }
+    }
+
+    #[test]
+    fn row_by_row_shadow_matches_the_whole_mask() {
+        let mut seed = 0x0123_4567_89AB_CDEFu64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut f = move |lo: f32, hi: f32| lo + (next() % 10_000) as f32 / 10_000.0 * (hi - lo);
+        for case in 0..300 {
+            let (w, h) = (1 + f(0.0, 60.0) as u32, 1 + f(0.0, 60.0) as u32);
+            let base: Vec<u8> = (0..w * h * 4).map(|i| (i * 37 + case) as u8).collect();
+            let mut desc = ShadowDesc::new(
+                GpuRect::new(f(-20.0, 60.0), f(-20.0, 60.0), f(0.0, 50.0), f(0.0, 50.0)),
+                GpuColor::rgba(f(0.0, 255.0) as u8, 40, 200, f(1.0, 255.0) as u8),
+            );
+            desc.corner_radius = f(0.0, 15.0);
+            desc.offset_x = f(-8.0, 8.0);
+            desc.offset_y = f(-8.0, 8.0);
+            desc.spread = f(-5.0, 8.0);
+            // Mostly small blurs, now and then a huge one.
+            desc.blur_radius = if case % 10 == 3 {
+                f(100.0, 600.0)
+            } else {
+                f(0.0, 30.0)
+            };
+            if case % 4 == 1 {
+                desc.clip = Some(GpuRect::new(
+                    f(-5.0, 30.0),
+                    f(-5.0, 30.0),
+                    f(0.0, 40.0),
+                    f(0.0, 40.0),
+                ));
+            }
+            let mut rows = base.clone();
+            let mut whole = base.clone();
+            draw_box_shadow(&mut RgbaTarget::packed(&mut rows, w, h).unwrap(), &desc).unwrap();
+            whole_mask_shadow(&mut RgbaTarget::packed(&mut whole, w, h).unwrap(), &desc);
+            assert_eq!(rows, whole, "case {case}: {desc:?}");
+        }
     }
 
     #[test]
