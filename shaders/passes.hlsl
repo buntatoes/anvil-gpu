@@ -58,9 +58,12 @@ Texture2D<float2> ChromaUV : register(t5);
 Texture2D<float> ChromaU : register(t6);
 Texture2D<float> ChromaV : register(t7);
 
-float4 VSPass(float2 localPos : POSITION) : SV_Position
+// Draw four vertices as a triangle strip. The corner of the unit quad comes
+// from the vertex index, so no vertex buffer or input layout is needed.
+float4 VSPass(uint id : SV_VertexID) : SV_Position
 {
-    float2 p = Region.xy + localPos * Region.zw;
+    float2 corner = float2(float(id & 1), float(id >> 1));
+    float2 p = Region.xy + corner * Region.zw;
     float2 ndc = (p / ViewportSize) * 2.0 - 1.0;
     ndc.y = -ndc.y;
     return float4(ndc, 0.0, 1.0);

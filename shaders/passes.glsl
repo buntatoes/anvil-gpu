@@ -39,12 +39,14 @@
 // Region in render-target pixels: x, y, width, height. Usually 0, 0, size.
 uniform vec4 uRegion;
 uniform vec2 uViewportSize;
-layout(location = 0) in vec2 aLocalPos;
 
 void main()
 {
+    // Draw four vertices as a triangle strip. The corner of the unit quad
+    // comes from the vertex index, so no vertex buffer is needed.
+    vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
     // Unit quad to pixels, then to NDC. No y flip: window row y is memory row y.
-    vec2 p = uRegion.xy + aLocalPos * uRegion.zw;
+    vec2 p = uRegion.xy + corner * uRegion.zw;
     gl_Position = vec4((p / uViewportSize) * 2.0 - 1.0, 0.0, 1.0);
 }
 #endif
