@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 Buntato
-//! CPU drawing of rounded boxes, box shadows, linear gradients, a shelf-packed RGBA atlas, and RGBA/NV12 conversion.
+//! CPU drawing for the compositor, with the same passes written out as shaders.
 //!
-//! CPU entry points:
-//!
+//! - [`Compositor`] draws blurred box shadows, linear and radial gradients, and
+//!   RGBA, NV12, and I420 frame blits. It can try a device backend first and
+//!   falls back to [`SoftwareBackend`] on any device error. [`probe_hardware`]
+//!   and [`select_backend`] decide whether a device is used; today no device
+//!   draw path exists, so everything is drawn on the CPU.
 //! - [`render_frame_rgba`] rasterizes [`GpuQuad`] values into a straight RGBA8 framebuffer.
 //! - [`sdf_rounded_box`], [`sdf_box_shadow_alpha`], and [`sample_linear_gradient`] are the signed-distance, shadow, and gradient helpers.
 //! - [`TextureAtlas`] shelf-packs straight RGBA8 images and samples them.
@@ -12,8 +15,8 @@
 //! `anvil-raster` calls the CPU SDF helpers for shadows, rounded boxes, and gradients.
 //! `anvil-video` uses [`Nv12Surface`] for CPU color conversion.
 //!
-//! [`COMPOSITOR_HLSL`] and [`COMPOSITOR_GLSL`] are `include_str!` source strings.
-//! [`device`] shades those quads in 16 by 16 tiles and probes `libEGL.so.1` on Linux.
+//! [`COMPOSITOR_HLSL`], [`COMPOSITOR_GLSL`], [`PASSES_HLSL`], and [`PASSES_GLSL`] are `include_str!` source strings.
+//! [`GpuDevice`] shades quads in 16 by 16 tiles and probes `libEGL.so.1` on Linux.
 //!
 //! All `unsafe` code lives in one private module, `sys`, which wraps the few
 //! system calls the crate makes (EGL on Linux, Direct3D on Windows).
@@ -42,7 +45,8 @@ pub use device::{
 
 /// HLSL Shader Model 5.0 source text from `shaders/compositor.hlsl`.
 ///
-/// Embedded with `include_str!`. This crate does not compile or run it.
+/// Embedded with `include_str!`. On Windows, [`probe_and_compile_d3d11_compositor`]
+/// compiles it. Nothing runs it.
 pub const COMPOSITOR_HLSL: &str = include_str!("../shaders/compositor.hlsl");
 
 /// GLSL 330 core source text from `shaders/compositor.glsl`.

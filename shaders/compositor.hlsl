@@ -2,13 +2,14 @@
 // Copyright (c) 2026 Buntato
 // HLSL Shader Model 5.0 source text. Author: Buntato.
 //
-// Nothing in this repository compiles this file or creates a Direct3D device.
-// The crate embeds this text with include_str!. CPU code in src/lib.rs draws
+// The crate embeds this text with include_str!. On Windows,
+// probe_and_compile_d3d11_compositor compiles VSMain and PSMain to DXBC and
+// checks that a Direct3D 11 device opens. Nothing draws with them. CPU code in src/lib.rs draws
 // rounded boxes, box shadows, and linear gradients, shelf-packs an RGBA atlas,
 // and converts RGBA and limited-range BT.709 NV12. anvil-raster calls those CPU
 // SDF helpers. anvil-video uses Nv12Surface for CPU color conversion.
 //
-// Entry points (not invoked from this repository):
+// Entry points (compiled on Windows, never run on a device):
 // - VSMain: expands a unit quad into the rect, flips y into clip space, and
 //   forwards colors, clip, UV, and params.
 // - PSMain: rejects fragments outside the clip, evaluates the rounded-box SDF,
