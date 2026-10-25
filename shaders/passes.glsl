@@ -120,21 +120,28 @@ uniform ivec2 uAxis;
 // Pass radius from shadow_pass_radius in src/compose.rs.
 uniform int uRadius;
 
+// MASK_ONE in src/compose.rs: mask values are whole multiples of 1 / 32768,
+// so the sums below are exact integers on every device.
+const float MASK_ONE = 32768.0;
+
 void main()
 {
     ivec2 p = RegionPixel();
     ivec2 size = textureSize(uSource, 0);
-    float acc = 0.0;
+    int acc = 0;
     // Texels outside the mask count as zero, as in box_blur_line.
     for (int k = -uRadius; k <= uRadius; ++k)
     {
         ivec2 q = p + uAxis * k;
         if (q.x >= 0 && q.y >= 0 && q.x < size.x && q.y < size.y)
         {
-            acc += texelFetch(uSource, q, 0).r;
+            acc += int(roundEven(texelFetch(uSource, q, 0).r * MASK_ONE));
         }
     }
-    FragColor = vec4(max(acc / float(2 * uRadius + 1), 0.0), 0.0, 0.0, 1.0);
+    // Mean rounded half up, as BoxRun::emit.
+    int w = 2 * uRadius + 1;
+    int mean = (2 * acc + w) / (2 * w);
+    FragColor = vec4(float(mean) / MASK_ONE, 0.0, 0.0, 1.0);
 }
 #endif
 

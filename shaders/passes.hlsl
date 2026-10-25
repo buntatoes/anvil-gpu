@@ -119,13 +119,17 @@ float4 PSShadowMask(float4 pos : SV_Position) : SV_Target
     return float4(saturate(0.5 - d), 0.0, 0.0, 1.0);
 }
 
+// MASK_ONE in src/compose.rs: mask values are whole multiples of 1 / 32768,
+// so the sums below are exact integers on every device.
+static const float MaskOne = 32768.0;
+
 float4 PSBoxBlur(float4 pos : SV_Position) : SV_Target
 {
     int2 p = int2(pos.xy);
     uint w, h;
     Source.GetDimensions(w, h);
     int2 size = int2(w, h);
-    float acc = 0.0;
+    int acc = 0;
     // Texels outside the mask count as zero, as in box_blur_line.
     [loop]
     for (int k = -Radius; k <= Radius; ++k)
@@ -133,10 +137,14 @@ float4 PSBoxBlur(float4 pos : SV_Position) : SV_Target
         int2 q = p + Axis * k;
         if (q.x >= 0 && q.y >= 0 && q.x < size.x && q.y < size.y)
         {
-            acc += Source.Load(int3(q, 0));
+            // HLSL round() rounds halfway cases to even, as roundEven.
+            acc += (int)round(Source.Load(int3(q, 0)) * MaskOne);
         }
     }
-    return float4(max(acc / float(2 * Radius + 1), 0.0), 0.0, 0.0, 1.0);
+    // Mean rounded half up, as BoxRun::emit.
+    int width = 2 * Radius + 1;
+    int mean = (2 * acc + width) / (2 * width);
+    return float4(float(mean) / MaskOne, 0.0, 0.0, 1.0);
 }
 
 float4 PSShadowPaint(float4 pos : SV_Position) : SV_Target

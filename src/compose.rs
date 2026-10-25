@@ -388,21 +388,34 @@ pub(crate) fn shadow_bounds(
     Ok(plan_shadow(target, desc)?.map(|p| p.out))
 }
 
-/// One box pass over a line of `n` values, fed one value at a time.
+/// Fixed-point one for the blurred shadow mask: 15 fraction bits.
 ///
-/// Output `i` is the mean of inputs `i - r..=i + r`, with zeros outside the
-/// line. The running sum is updated in a fixed order (add the value entering
-/// the window, then drop the one leaving it), so the same inputs always give
-/// the same bits, whether a whole line is blurred at once or values arrive one
-/// row at a time.
+/// Before the box passes, coverage is rounded (ties to even) to a multiple of
+/// `1 / MASK_ONE`, and every pass works on those integers. Sums of up to 257
+/// such values stay below 2^24, so they are exact everywhere, including in
+/// the f32 math of the shader passes, and a device gives the same mask as
+/// this code bit for bit. Each pass rounds its mean half up:
+/// `(2 * sum + w) / (2 * w)` with `w = 2r + 1`.
+const MASK_ONE: u32 = 1 << 15;
+
+/// Coverage in 0..=1 as a mask value.
+fn mask_value(coverage: f32) -> u32 {
+    (coverage * MASK_ONE as f32).round_ties_even() as u32
+}
+
+/// One box pass over a line of `n` mask values, fed one value at a time.
+///
+/// Output `i` is the rounded mean of inputs `i - r..=i + r`, with zeros
+/// outside the line. The sums are exact integers, so it makes no difference
+/// whether a whole line is blurred at once or values arrive one row at a time.
 #[derive(Clone, Debug)]
 struct BoxRun {
     n: usize,
     r: usize,
-    width: f64,
-    acc: f64,
+    width: u32,
+    acc: u32,
     // Last 2r + 2 inputs, by index modulo the length.
-    ring: Vec<f32>,
+    ring: Vec<u32>,
     pushed: usize,
     emitted: usize,
 }
@@ -412,38 +425,38 @@ impl BoxRun {
         Self {
             n,
             r,
-            width: (2 * r + 1) as f64,
-            acc: 0.0,
-            ring: vec![0.0; 2 * r + 2],
+            width: (2 * r + 1) as u32,
+            acc: 0,
+            ring: vec![0; 2 * r + 2],
             pushed: 0,
             emitted: 0,
         }
     }
 
-    fn input(&self, k: usize) -> f64 {
-        self.ring[k % self.ring.len()] as f64
+    fn input(&self, k: usize) -> u32 {
+        self.ring[k % self.ring.len()]
     }
 
-    fn emit(&mut self) -> f32 {
+    fn emit(&mut self) -> u32 {
         self.emitted += 1;
-        (self.acc / self.width).max(0.0) as f32
+        (2 * self.acc + self.width) / (2 * self.width)
     }
 
     /// Feed input `pushed`. Returns the next output once it is known.
-    fn push(&mut self, v: f32) -> Option<f32> {
+    fn push(&mut self, v: u32) -> Option<u32> {
         debug_assert!(self.pushed < self.n);
         let k = self.pushed;
         let slot = k % self.ring.len();
         self.pushed += 1;
         let first = self.r.min(self.n - 1);
         if k <= first {
-            self.acc += v as f64;
+            self.acc += v;
             self.ring[slot] = v;
             return (k == first).then(|| self.emit());
         }
         // `v` is input i + r + 1 for output i = k - r - 1.
         let i = k - self.r - 1;
-        self.acc += v as f64;
+        self.acc += v;
         if i >= self.r {
             self.acc -= self.input(i - self.r);
         }
@@ -452,7 +465,7 @@ impl BoxRun {
     }
 
     /// After all `n` inputs: the remaining outputs, one per call.
-    fn finish(&mut self) -> Option<f32> {
+    fn finish(&mut self) -> Option<u32> {
         debug_assert_eq!(self.pushed, self.n);
         if self.emitted >= self.n {
             return None;
@@ -466,7 +479,7 @@ impl BoxRun {
 }
 
 /// One box pass over a whole line.
-fn box_blur_line(src: &[f32], dst: &mut [f32], r: usize) {
+fn box_blur_line(src: &[u32], dst: &mut [u32], r: usize) {
     if src.is_empty() {
         return;
     }
@@ -485,7 +498,7 @@ fn box_blur_line(src: &[f32], dst: &mut [f32], r: usize) {
 }
 
 /// Feed `v` through a chain of passes. Returns the last pass's output, if any.
-fn through(passes: &mut [BoxRun], v: f32) -> Option<f32> {
+fn through(passes: &mut [BoxRun], v: u32) -> Option<u32> {
     let mut v = v;
     for pass in passes {
         v = pass.push(v)?;
@@ -494,7 +507,7 @@ fn through(passes: &mut [BoxRun], v: f32) -> Option<f32> {
 }
 
 /// Next output of a chain whose first pass has had all its inputs.
-fn drain(passes: &mut [BoxRun]) -> Option<f32> {
+fn drain(passes: &mut [BoxRun]) -> Option<u32> {
     for k in 0..passes.len() {
         while let Some(v) = passes[k].finish() {
             if let Some(o) = through(&mut passes[k + 1..], v) {
@@ -509,7 +522,8 @@ fn drain(passes: &mut [BoxRun]) -> Option<f32> {
 struct MaskRows<'p> {
     plan: &'p ShadowPlan,
     coverage: Vec<f32>,
-    a: Vec<f32>,
+    a: Vec<u32>,
+    b: Vec<u32>,
 }
 
 impl<'p> MaskRows<'p> {
@@ -517,38 +531,47 @@ impl<'p> MaskRows<'p> {
         Self {
             plan,
             coverage: vec![0.0; plan.mask_w],
-            a: vec![0.0; plan.mask_w],
+            a: vec![0; plan.mask_w],
+            b: vec![0; plan.mask_w],
         }
     }
 
-    /// Mask row `j`, blurred along x when the plan has a radius.
-    fn row(&mut self, j: usize) -> &[f32] {
+    /// Coverage of mask row `j`: the rounded box, with the same one-pixel
+    /// ramp quads use.
+    fn coverage(&mut self, j: usize) -> &[f32] {
         let plan = self.plan;
-        // Coverage of the rounded box, the same one-pixel ramp quads use.
         let sy = (plan.mask_y + j as i64) as f32 + 0.5 - plan.cy;
         for (i, c) in self.coverage.iter_mut().enumerate() {
             let sx = (plan.mask_x + i as i64) as f32 + 0.5 - plan.cx;
             let d = sdf_rounded_box(sx, sy, plan.half_w, plan.half_h, plan.corner);
             *c = (0.5 - d).clamp(0.0, 1.0);
         }
-        if plan.radius > 0 {
-            box_blur_line(&self.coverage, &mut self.a, plan.radius);
-            box_blur_line(&self.a, &mut self.coverage, plan.radius);
-            self.a.copy_from_slice(&self.coverage);
-            box_blur_line(&self.a, &mut self.coverage, plan.radius);
-        }
         &self.coverage
+    }
+
+    /// Mask row `j` as mask values, blurred along x.
+    fn blurred(&mut self, j: usize) -> &[u32] {
+        self.coverage(j);
+        for (q, &c) in self.a.iter_mut().zip(&self.coverage) {
+            *q = mask_value(c);
+        }
+        let r = self.plan.radius;
+        box_blur_line(&self.a, &mut self.b, r);
+        box_blur_line(&self.b, &mut self.a, r);
+        box_blur_line(&self.a, &mut self.b, r);
+        &self.b
     }
 }
 
 /// Draw a blurred box shadow in software.
 ///
-/// The mask is never held whole. Rows are made one at a time, blurred along
-/// x, and streamed through three box passes per output column, so memory is
-/// about `3 * (2r + 2)` floats per output column plus a few mask rows, where
-/// `r` is [`shadow_pass_radius`]. At the largest blur and a 16384 pixel wide
-/// target that is under 60 MB. The result is the same, bit for bit, as
-/// blurring the whole mask at once.
+/// Without blur, the coverage of each pixel is painted as is. With blur, the
+/// mask is never held whole. Rows are made one at a time, blurred along x,
+/// and streamed through three box passes per output column, so memory is
+/// about `3 * (2r + 2)` integers per output column plus a few mask rows,
+/// where `r` is [`shadow_pass_radius`]. At the largest blur and a 16384 pixel
+/// wide target that is under 60 MB. The result is the same, bit for bit, as
+/// blurring the whole mask at once. See `MASK_ONE` for the fixed-point mask.
 pub fn draw_box_shadow(target: &mut RgbaTarget<'_>, desc: &ShadowDesc) -> Result<(), ComposeError> {
     let Some(plan) = plan_shadow(target, desc)? else {
         return Ok(());
@@ -570,7 +593,7 @@ pub fn draw_box_shadow(target: &mut RgbaTarget<'_>, desc: &ShadowDesc) -> Result
     };
     if plan.radius == 0 {
         for j in 0..plan.mask_h {
-            let line = rows.row(j)[margin..margin + out_w].to_vec();
+            let line = rows.coverage(j)[margin..margin + out_w].to_vec();
             paint(target, j, &line);
         }
         return Ok(());
@@ -580,13 +603,14 @@ pub fn draw_box_shadow(target: &mut RgbaTarget<'_>, desc: &ShadowDesc) -> Result
         .map(|_| std::array::from_fn(|_| BoxRun::new(plan.mask_h, plan.radius)))
         .collect();
     let mut line = vec![0f32; out_w];
+    let to_coverage = |q: u32| q as f32 / MASK_ONE as f32;
     let mut next = 0;
     for j in 0..plan.mask_h {
-        let row = rows.row(j);
+        let row = rows.blurred(j);
         let mut ready = false;
         for (n, passes) in columns.iter_mut().enumerate() {
             if let Some(v) = through(passes, row[margin + n]) {
-                line[n] = v;
+                line[n] = to_coverage(v);
                 ready = true;
             }
         }
@@ -597,7 +621,7 @@ pub fn draw_box_shadow(target: &mut RgbaTarget<'_>, desc: &ShadowDesc) -> Result
     }
     while next < plan.mask_h {
         for (n, passes) in columns.iter_mut().enumerate() {
-            line[n] = drain(passes).unwrap_or(0.0);
+            line[n] = to_coverage(drain(passes).unwrap_or(0));
         }
         paint(target, next, &line);
         next += 1;
@@ -1243,40 +1267,41 @@ mod tests {
         assert!((got - area).abs() < 3.0, "mass {got} vs {area}");
     }
 
-    // The whole-mask blur from 0.8.0, kept as the reference for the row by
-    // row version.
-    fn whole_line(src: &[f32], dst: &mut [f32], r: usize) {
+    // A plain box pass from prefix sums: the reference for the running sums
+    // in BoxRun.
+    fn whole_line(src: &[u32], dst: &mut [u32], r: usize) {
         let n = src.len();
-        let width = (2 * r + 1) as f64;
-        let mut acc: f64 = src[..n.min(r + 1)].iter().map(|&v| v as f64).sum();
-        for i in 0..n {
-            dst[i] = (acc / width).max(0.0) as f32;
-            if i + r + 1 < n {
-                acc += src[i + r + 1] as f64;
-            }
-            if i >= r {
-                acc -= src[i - r] as f64;
-            }
+        let w = (2 * r + 1) as u32;
+        let mut prefix = vec![0u32; n + 1];
+        for (i, &v) in src.iter().enumerate() {
+            prefix[i + 1] = prefix[i] + v;
+        }
+        for (i, out) in dst.iter_mut().enumerate().take(n) {
+            let sum = prefix[(i + r + 1).min(n)] - prefix[i.saturating_sub(r)];
+            *out = (2 * sum + w) / (2 * w);
         }
     }
 
+    // The whole mask in memory, blurred row by row and then column by
+    // column: the reference for the streamed version.
     fn whole_mask_shadow(target: &mut RgbaTarget<'_>, desc: &ShadowDesc) {
         let Some(plan) = plan_shadow(target, desc).unwrap() else {
             return;
         };
         let (w, h, r) = (plan.mask_w, plan.mask_h, plan.radius);
-        let mut mask = vec![0f32; w * h];
+        let mut cover = vec![0f32; w * h];
         for j in 0..h {
             let sy = (plan.mask_y + j as i64) as f32 + 0.5 - plan.cy;
             for i in 0..w {
                 let sx = (plan.mask_x + i as i64) as f32 + 0.5 - plan.cx;
                 let d = sdf_rounded_box(sx, sy, plan.half_w, plan.half_h, plan.corner);
-                mask[j * w + i] = (0.5 - d).clamp(0.0, 1.0);
+                cover[j * w + i] = (0.5 - d).clamp(0.0, 1.0);
             }
         }
         if r > 0 {
-            let mut a = vec![0f32; w.max(h)];
-            let mut b = vec![0f32; w.max(h)];
+            let mut mask: Vec<u32> = cover.iter().map(|&c| mask_value(c)).collect();
+            let mut a = vec![0u32; w.max(h)];
+            let mut b = vec![0u32; w.max(h)];
             for row in mask.chunks_exact_mut(w) {
                 whole_line(row, &mut a[..w], r);
                 whole_line(&a[..w], &mut b[..w], r);
@@ -1293,13 +1318,16 @@ mod tests {
                     mask[y * w + x] = b[y];
                 }
             }
+            for (c, &q) in cover.iter_mut().zip(&mask) {
+                *c = q as f32 / MASK_ONE as f32;
+            }
         }
         let margin = 3 * r;
         for y in plan.out.y0..plan.out.y1 {
             let j = (y - plan.out.y0) as usize + margin;
             for x in plan.out.x0..plan.out.x1 {
                 let i = (x - plan.out.x0) as usize + margin;
-                let cov = mask[j * w + i];
+                let cov = cover[j * w + i];
                 if cov > 0.0 {
                     over_straight(target.px_mut(x, y), desc.color, cov);
                 }
@@ -1308,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn streamed_box_pass_matches_the_whole_line_bit_for_bit() {
+    fn running_box_pass_matches_the_plain_sum() {
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
         let mut next = move || {
             seed ^= seed << 13;
@@ -1319,13 +1347,14 @@ mod tests {
         for _ in 0..400 {
             let n = 1 + (next() % 90) as usize;
             let r = (next() % 40) as usize;
-            let src: Vec<f32> = (0..n).map(|_| (next() % 10_000) as f32 / 9_999.0).collect();
-            let mut want = vec![0f32; n];
-            let mut got = vec![0f32; n];
+            let src: Vec<u32> = (0..n)
+                .map(|_| (next() % (MASK_ONE as u64 + 1)) as u32)
+                .collect();
+            let mut want = vec![0u32; n];
+            let mut got = vec![0u32; n];
             whole_line(&src, &mut want, r);
             box_blur_line(&src, &mut got, r);
-            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-            assert_eq!(bits(&got), bits(&want), "n {n} r {r}");
+            assert_eq!(got, want, "n {n} r {r}");
         }
     }
 
