@@ -29,6 +29,8 @@ What is real on the hardware side:
 - On Windows, it creates a Direct3D 11 device (hardware, then WARP) and compiles every pass in `shaders/passes.hlsl` to DXBC with `d3dcompiler_47.dll`.
 - `select_backend` only picks the GPU when a device opened, the passes compiled, and a draw path exists. No draw path exists yet (no upload, no draw, no read back), so `Compositor::open` always draws on the CPU, and `HardwareProbe::reason` says why.
 
+The probe is cached per process, not per machine. On Linux, the first `GpuDevice::open`, `Compositor::open`, or `probe_hardware` in a process loads EGL and initializes the default display, which connects that process to the display server, and the connection stays open until the process exits. A program that runs one renderer process per tab should probe once in the main process and pass the decision to each renderer, for example by calling `Compositor::software()` there when the main process picked software, rather than letting every renderer open its own connection.
+
 How the shader passes were checked: every GLSL pass and every HLSL entry point passes `glslangValidator`. The GLSL passes were also run once on Mesa's llvmpipe driver with a throwaway program outside this repository, and they matched the CPU output byte for byte on 1,500 random scenes. That was a spot check, not a test in this repository. The HLSL passes have not been run on a device, and on Windows they are only compiled.
 
 ## What it does
