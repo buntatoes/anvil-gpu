@@ -45,6 +45,42 @@ pub const COMPOSITOR_HLSL: &str = include_str!("../shaders/compositor.hlsl");
 /// Embedded with `include_str!`. This crate does not compile or run it.
 pub const COMPOSITOR_GLSL: &str = include_str!("../shaders/compositor.glsl");
 
+/// GLSL 330 core compositor passes from `shaders/passes.glsl`: shadow mask, box
+/// blur, shadow paint, gradient, and RGBA, NV12, and I420 blits.
+///
+/// Embedded with `include_str!`. Nothing in this crate compiles or runs it yet.
+pub const PASSES_GLSL: &str = include_str!("../shaders/passes.glsl");
+
+/// HLSL Shader Model 5.0 compositor passes from `shaders/passes.hlsl`, the same
+/// passes as [`PASSES_GLSL`].
+///
+/// Nothing in this crate compiles or runs it yet.
+pub const PASSES_HLSL: &str = include_str!("../shaders/passes.hlsl");
+
+/// Entry points and profiles in [`PASSES_HLSL`].
+pub const PASS_ENTRY_POINTS: &[(&str, &str)] = &[
+    ("VSPass", "vs_5_0"),
+    ("PSShadowMask", "ps_5_0"),
+    ("PSBoxBlur", "ps_5_0"),
+    ("PSShadowPaint", "ps_5_0"),
+    ("PSGradient", "ps_5_0"),
+    ("PSBlitRgba", "ps_5_0"),
+    ("PSBlitNv12", "ps_5_0"),
+    ("PSBlitI420", "ps_5_0"),
+];
+
+/// `PASS_*` symbols in [`PASSES_GLSL`], one per fragment pass, in the same
+/// order as the pixel shaders in [`PASS_ENTRY_POINTS`].
+pub const GLSL_PASSES: &[&str] = &[
+    "PASS_SHADOW_MASK",
+    "PASS_BOX_BLUR",
+    "PASS_SHADOW_PAINT",
+    "PASS_GRADIENT",
+    "PASS_BLIT_RGBA",
+    "PASS_BLIT_NV12",
+    "PASS_BLIT_I420",
+];
+
 /// 8-bit straight RGBA. Channels are not premultiplied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuColor {
@@ -877,6 +913,39 @@ mod tests {
         let nv12 = Nv12Surface::from_rgba_bt709(2, 2, &red_2x2).unwrap();
         let decoded = nv12.to_rgba_bt709();
         assert!(decoded[0] > 230 && decoded[1] < 25 && decoded[2] < 25);
+    }
+
+    #[test]
+    fn pass_sources_name_every_pass_and_start_with_the_header() {
+        for src in [PASSES_GLSL, PASSES_HLSL, COMPOSITOR_GLSL, COMPOSITOR_HLSL] {
+            assert!(src.starts_with(
+                "// SPDX-License-Identifier: MPL-2.0\n// Copyright (c) 2026 Buntato\n"
+            ));
+        }
+        assert!(PASSES_GLSL.contains("#version 330 core"));
+        for pass in GLSL_PASSES {
+            assert!(
+                PASSES_GLSL.contains(&format!("#ifdef {pass}"))
+                    || PASSES_GLSL.contains(&format!("defined({pass})"))
+            );
+        }
+        for (entry, profile) in PASS_ENTRY_POINTS {
+            assert!(PASSES_HLSL.contains(&format!(" {entry}(")), "{entry}");
+            assert!(profile.ends_with("_5_0"));
+        }
+        // Both files carry the same math helpers as src/compose.rs.
+        for name in [
+            "OverStraight",
+            "Bt709ToRgb",
+            "SdfRoundedBox",
+            "NearestIndex",
+            "Taps",
+        ] {
+            assert!(
+                PASSES_GLSL.contains(name) && PASSES_HLSL.contains(name),
+                "{name}"
+            );
+        }
     }
 
     #[test]
