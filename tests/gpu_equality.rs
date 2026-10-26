@@ -4,14 +4,18 @@
 //!
 //! Each test opens [`Compositor::open`]. When this machine has no usable
 //! device (no EGL display, no OpenGL 3.3 core context, or a self-test that
-//! did not match), the test prints why and passes without checking: a
-//! missing device is not a failure. Otherwise every case is drawn on the
-//! device and in software, and the whole target, row padding included, must
-//! match byte for byte, with no fallback to software along the way.
+//! did not match), the test writes a `SKIPPED` line straight to stderr, so
+//! it shows without `--nocapture`, and passes without checking: a missing
+//! device is not a failure. Set `ANVIL_REQUIRE_DEVICE=1` on a machine that
+//! is known to have one to make it a failure. Otherwise every case is drawn
+//! on the device and in software, and the whole target, row padding
+//! included, must match byte for byte, with no fallback to software along
+//! the way.
 //!
 //! Cases come from a seeded xorshift generator, so a failure names a case
 //! that reproduces. Each case runs on its own thread with a time limit.
 
+use std::io::Write;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -70,17 +74,22 @@ impl Rng {
 }
 
 /// The device compositor, or `None` (with a note) when there is none here.
-fn device() -> Option<Compositor> {
+fn device(label: &str) -> Option<Compositor> {
     let c = Compositor::open();
     if c.active_backend() == BackendKind::Hardware {
-        Some(c)
-    } else {
-        eprintln!(
-            "skipped: no usable device here ({})",
-            c.probe().reason().unwrap_or("unknown")
-        );
-        None
+        return Some(c);
     }
+    let why = c.probe().reason().unwrap_or("unknown");
+    if std::env::var("ANVIL_REQUIRE_DEVICE").is_ok_and(|v| v == "1") {
+        panic!("{label}: ANVIL_REQUIRE_DEVICE=1 but there is no usable device ({why})");
+    }
+    // The test harness only captures print! and eprint!, so this line shows
+    // in a normal `cargo test` run.
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "SKIPPED {label}: no usable device here ({why}); nothing was compared"
+    );
+    None
 }
 
 /// A target of odd size with random pixels and row padding.
@@ -151,7 +160,7 @@ fn same_on_both(
 
 /// Run `body(case)` for each case on a thread with [`CASE_LIMIT`].
 fn run_cases(label: &'static str, cases: u64, body: fn(&mut Compositor, u64)) {
-    let Some(_) = device() else {
+    let Some(_) = device(label) else {
         return;
     };
     let before = device_pass_draws();
