@@ -761,10 +761,24 @@ pub fn linear_gradient_t(
     let dx = end_x - start_x;
     let dy = end_y - start_y;
     let len2 = dx * dx + dy * dy;
-    if len2 < 1e-12 {
-        return 1.0;
+    if len2.is_finite() {
+        // The same f32 steps as the gradient pass in shaders/passes.*,
+        // so a device gives the same bytes.
+        if len2 < 1e-12 {
+            return 1.0;
+        }
+        return (((px - start_x) * dx + (py - start_y) * dy) / len2).clamp(0.0, 1.0);
     }
-    (((px - start_x) * dx + (py - start_y) * dy) / len2).clamp(0.0, 1.0)
+    // Endpoints so far apart that the squared length overflows f32. Redo it
+    // in f64 instead of letting every pixel take the first stop. Devices are
+    // never given such a gradient (MAX_DEVICE_COORD in src/gpu.rs).
+    let (dx, dy) = (
+        f64::from(end_x) - f64::from(start_x),
+        f64::from(end_y) - f64::from(start_y),
+    );
+    let t = ((f64::from(px) - f64::from(start_x)) * dx + (f64::from(py) - f64::from(start_y)) * dy)
+        / (dx * dx + dy * dy);
+    t.clamp(0.0, 1.0) as f32
 }
 
 /// Fill a gradient in software.
