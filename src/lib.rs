@@ -6,7 +6,8 @@
 //!   RGBA, NV12, and I420 frame blits. It tries a device backend first and
 //!   falls back to [`SoftwareBackend`] on any device error. [`probe_hardware`]
 //!   and [`select_backend`] decide whether a device is used. On Linux the
-//!   device is OpenGL 3.3 core through EGL, used only when its self-test
+//!   device is OpenGL 3.3 core through EGL, and on Windows Direct3D 11 (not
+//!   yet run on a Windows machine). Either is used only when its self-test
 //!   scene matches the CPU bytes exactly; elsewhere everything is drawn on
 //!   the CPU.
 //! - [`render_frame_rgba`] rasterizes [`GpuQuad`] values into a straight RGBA8 framebuffer.
@@ -21,8 +22,9 @@
 //! [`GpuDevice`] shades quads in 16 by 16 tiles and probes `libEGL.so.1` on Linux.
 //!
 //! All `unsafe` code lives in private modules that only wrap system calls:
-//! `sys` (the Direct3D probe on Windows) and `sys_gl` (EGL and OpenGL on
-//! Linux). The rest of the crate denies `unsafe`.
+//! `sys` (the Direct3D probe and HLSL compiler on Windows), `sys_gl` (EGL
+//! and OpenGL on Linux), and `sys_d3d` (the Direct3D 11 draw path). The rest
+//! of the crate denies `unsafe`.
 
 #![deny(unsafe_code)]
 
@@ -30,10 +32,15 @@ mod backend;
 mod compose;
 mod device;
 mod gpu;
+#[cfg(target_os = "windows")]
+mod gpu_d3d;
 #[cfg(target_os = "linux")]
 mod gpu_gl;
 #[allow(unsafe_code)]
 mod sys;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod sys_d3d;
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod sys_gl;
@@ -75,7 +82,8 @@ pub const PASSES_GLSL: &str = include_str!("../shaders/passes.glsl");
 /// passes as [`PASSES_GLSL`].
 ///
 /// On Windows, [`probe_hardware`] compiles every entry in [`PASS_ENTRY_POINTS`]
-/// to `DXBC`. Nothing runs the bytecode yet.
+/// to `DXBC`, and the Direct3D 11 device backend runs them. That backend has
+/// not been run on a Windows machine yet.
 pub const PASSES_HLSL: &str = include_str!("../shaders/passes.hlsl");
 
 /// Entry points and profiles in [`PASSES_HLSL`].

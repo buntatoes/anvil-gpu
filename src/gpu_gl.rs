@@ -250,28 +250,11 @@ impl SharedDevice for GlDevice {
 mod tests {
     use super::*;
     use crate::gpu::DeviceBackend;
+    use crate::gpu::testing::{draw_scene, within_limit};
     use crate::{
-        BackendKind, BlitDesc, Compositor, Filter, GpuColor, GpuGradientStop, GpuRect,
-        GradientDesc, GradientShape, Nv12Surface, RgbaTarget, ShadowDesc, VideoFrame,
-        device_pass_draws,
+        BackendKind, Compositor, GpuColor, GpuGradientStop, GpuRect, GradientDesc, GradientShape,
+        RgbaTarget, device_pass_draws,
     };
-
-    /// Longest one of these tests may take before it counts as hung.
-    const TEST_LIMIT: Duration = Duration::from_secs(60);
-
-    /// Run `f` on its own thread and fail if it panics or runs too long.
-    fn within_limit(f: impl FnOnce() + Send + 'static) {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            f();
-            let _ = tx.send(());
-        });
-        match rx.recv_timeout(TEST_LIMIT) {
-            Ok(()) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the test body panicked"),
-            Err(mpsc::RecvTimeoutError::Timeout) => panic!("the test body ran past {TEST_LIMIT:?}"),
-        }
-    }
 
     /// True when this machine has a working GL device. Prints why not.
     fn have_gl() -> bool {
@@ -296,85 +279,6 @@ mod tests {
             ),
             Err(stop) => (Compositor::software(), Err(stop)),
         }
-    }
-
-    /// A shadow, two gradients, and three blits on a padded 50 by 40 target.
-    fn draw_scene(c: &mut Compositor) -> Vec<u8> {
-        const STRIDE: usize = 50 * 4 + 8;
-        let mut buf: Vec<u8> = (0..STRIDE * 40).map(|i| (i * 13 + 7) as u8).collect();
-        let mut t = RgbaTarget::new(&mut buf, 50, 40, STRIDE).unwrap();
-        let mut shadow = ShadowDesc::new(
-            GpuRect::new(8.0, 6.0, 22.0, 14.0),
-            GpuColor::rgba(5, 10, 40, 180),
-        );
-        shadow.blur_radius = 9.0;
-        shadow.corner_radius = 5.0;
-        shadow.offset_y = 3.0;
-        shadow.spread = 1.5;
-        c.box_shadow(&mut t, &shadow).unwrap();
-        let stops = [
-            GpuGradientStop::new(0.0, GpuColor::rgba(250, 120, 20, 255)),
-            GpuGradientStop::new(0.4, GpuColor::rgba(20, 220, 90, 128)),
-            GpuGradientStop::new(1.0, GpuColor::rgba(20, 80, 250, 200)),
-        ];
-        let linear = GradientDesc {
-            rect: GpuRect::new(2.0, 24.0, 30.0, 14.0),
-            shape: GradientShape::Linear {
-                start_x: 2.0,
-                start_y: 24.0,
-                end_x: 30.0,
-                end_y: 36.0,
-            },
-            stops: &stops,
-            clip: None,
-        };
-        c.fill_gradient(&mut t, &linear).unwrap();
-        let radial = GradientDesc {
-            rect: GpuRect::new(30.0, 2.0, 18.0, 20.0),
-            shape: GradientShape::Radial {
-                center_x: 39.0,
-                center_y: 12.0,
-                radius_x: 9.0,
-                radius_y: 6.0,
-            },
-            stops: &stops,
-            clip: Some(GpuRect::new(31.0, 3.0, 15.0, 15.0)),
-        };
-        c.fill_gradient(&mut t, &radial).unwrap();
-        let rgba: Vec<u8> = (0..7 * 5 * 4).map(|i| (i * 29 + 3) as u8).collect();
-        let surface = Nv12Surface::from_rgba_bt709(6, 4, &rgba[..6 * 4 * 4]).unwrap();
-        let u = [100u8, 120, 140, 160, 180, 200];
-        let v = [90u8, 70, 50, 150, 170, 190];
-        let i420 = VideoFrame::I420 {
-            y: &surface.y_plane,
-            y_stride: 6,
-            u: &u,
-            u_stride: 3,
-            v: &v,
-            v_stride: 3,
-            width: 6,
-            height: 4,
-        };
-        let frames = [
-            VideoFrame::Rgba {
-                pixels: &rgba,
-                width: 7,
-                height: 5,
-                stride: 28,
-            },
-            VideoFrame::from_nv12(&surface),
-            i420,
-        ];
-        for (n, frame) in frames.iter().enumerate() {
-            let mut blit = BlitDesc::new(34 + n as i32 * 3, 22 + n as i32 * 5, 13, 9);
-            blit.filter = if n == 1 {
-                Filter::Nearest
-            } else {
-                Filter::Bilinear
-            };
-            c.blit_frame(&mut t, frame, &blit).unwrap();
-        }
-        buf
     }
 
     #[test]

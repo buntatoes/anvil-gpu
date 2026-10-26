@@ -14,11 +14,26 @@
 //! No call here keeps a pointer past the function that made it, and no call
 //! hands out a raw pointer to the rest of the crate.
 
+/// `D3DCOMPILE_IEEE_STRICTNESS`: no fast-math rewrites, for the draw path.
+#[cfg(target_os = "windows")]
+pub(crate) const COMPILE_IEEE_STRICT: u32 = 1 << 13;
+
 /// Compile one HLSL entry point with `D3DCompile` from `d3dcompiler_47.dll`.
 ///
 /// Returns the `DXBC` bytecode, or the compiler message on failure.
 #[cfg(target_os = "windows")]
 pub(crate) fn d3d_compile(source: &str, entry: &str, profile: &str) -> Result<Vec<u8>, String> {
+    d3d_compile_with(source, entry, profile, 0)
+}
+
+/// [`d3d_compile`] with extra `D3DCOMPILE_*` flags added to the usual ones.
+#[cfg(target_os = "windows")]
+pub(crate) fn d3d_compile_with(
+    source: &str,
+    entry: &str,
+    profile: &str,
+    extra_flags: u32,
+) -> Result<Vec<u8>, String> {
     use std::ffi::{CString, c_void};
     use std::ptr::{null, null_mut};
 
@@ -104,7 +119,8 @@ pub(crate) fn d3d_compile(source: &str, entry: &str, profile: &str) -> Result<Ve
     // the call. The name, entry, and profile strings are NUL-terminated and
     // outlive the call. Defines and include may be null. The two out pointers
     // are valid for writes. Flags are D3DCOMPILE_ENABLE_STRICTNESS (1 << 11)
-    // and D3DCOMPILE_OPTIMIZATION_LEVEL3 (1 << 15).
+    // and D3DCOMPILE_OPTIMIZATION_LEVEL3 (1 << 15), plus `extra_flags`, which
+    // only change how the code is compiled.
     let hr = unsafe {
         d3d_compile(
             source.as_ptr(),
@@ -114,7 +130,7 @@ pub(crate) fn d3d_compile(source: &str, entry: &str, profile: &str) -> Result<Ve
             null(),
             c_entry.as_ptr(),
             c_profile.as_ptr(),
-            (1 << 11) | (1 << 15),
+            (1 << 11) | (1 << 15) | extra_flags,
             0,
             &mut code_blob,
             &mut err_blob,

@@ -165,7 +165,8 @@ pub fn select_backend(probe: &HardwareProbe) -> BackendKind {
 ///
 /// On Linux this opens the EGL display, makes an OpenGL context, builds the
 /// passes, and draws the self-test scene, which takes a moment on the first
-/// call. A driver that does not answer within 20 seconds counts as missing.
+/// call. On Windows it does the same with a Direct3D 11 device and the HLSL
+/// passes. A driver that does not answer within 20 seconds counts as missing.
 pub fn probe_hardware() -> HardwareProbe {
     static PROBE: OnceLock<HardwareProbe> = OnceLock::new();
     *PROBE.get_or_init(run_probe)
@@ -192,17 +193,21 @@ fn run_probe() -> HardwareProbe {
 
 #[cfg(target_os = "windows")]
 fn run_probe() -> HardwareProbe {
+    use crate::gpu_d3d::D3dStop;
     let passes_compiled = crate::PASS_ENTRY_POINTS.iter().all(|&(entry, profile)| {
         crate::sys::d3d_compile(crate::PASSES_HLSL, entry, profile).is_ok()
     });
     match crate::sys::d3d11_create_device() {
-        Some((level, _)) => HardwareProbe {
-            api: HardwareApi::Direct3d11,
-            device_opened: true,
-            api_version: (((level >> 12) & 0xf) as i32, ((level >> 8) & 0xf) as i32),
-            passes_compiled,
-            submit_ready: false,
-        },
+        Some((level, _)) => {
+            let stop = crate::gpu_d3d::shared().err();
+            HardwareProbe {
+                api: HardwareApi::Direct3d11,
+                device_opened: true,
+                api_version: (((level >> 12) & 0xf) as i32, ((level >> 8) & 0xf) as i32),
+                passes_compiled: passes_compiled && matches!(stop, None | Some(D3dStop::SelfTest)),
+                submit_ready: stop.is_none(),
+            }
+        }
         None => HardwareProbe {
             api: HardwareApi::Direct3d11,
             passes_compiled,
@@ -226,8 +231,18 @@ fn open_device(_probe: &HardwareProbe) -> Option<Box<dyn ComposeBackend + Send>>
     )))
 }
 
+/// The device backend for a probe that selected hardware.
+#[cfg(target_os = "windows")]
+fn open_device(_probe: &HardwareProbe) -> Option<Box<dyn ComposeBackend + Send>> {
+    let device = crate::gpu_d3d::shared().ok()?;
+    Some(Box::new(crate::gpu::DeviceBackend::new(
+        device,
+        crate::gpu::Faults::default(),
+    )))
+}
+
 /// No device draw path on this platform.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn open_device(_probe: &HardwareProbe) -> Option<Box<dyn ComposeBackend + Send>> {
     None
 }

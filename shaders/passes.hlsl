@@ -3,9 +3,11 @@
 // HLSL Shader Model 5.0 compositor passes. Author: Buntato.
 //
 // These passes are the device side of src/compose.rs and match
-// shaders/passes.glsl line for line. On Windows the probe compiles every entry
-// point below to DXBC with d3dcompiler_47.dll (see PASS_ENTRY_POINTS in
-// src/lib.rs). Nothing in this repository runs them on a device yet.
+// shaders/passes.glsl line for line. On Windows, src/gpu_d3d.rs compiles every
+// entry point below to DXBC with d3dcompiler_47.dll (see PASS_ENTRY_POINTS in
+// src/lib.rs), runs them on a Direct3D 11 device, and uses the device only if
+// a self-test scene matches the software bytes. That path has been built and
+// type-checked but not yet run on a Windows machine.
 //
 // Entry points:
 // - VSPass: unit quad over the pass region.

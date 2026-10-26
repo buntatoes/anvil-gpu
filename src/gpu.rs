@@ -9,7 +9,7 @@
 //! into the target. [`DeviceBackend`] wraps a device as a
 //! [`ComposeBackend`]. [`self_test`] draws a fixed scene both ways and
 //! compares the bytes; a device that does not match is not used.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#![cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -91,8 +91,16 @@ impl Pass {
     }
 
     /// The `PASS_*` symbol that selects this pass in `passes.glsl`.
+    #[cfg(target_os = "linux")]
     pub(crate) fn glsl_symbol(self) -> &'static str {
         crate::GLSL_PASSES[self.index()]
+    }
+
+    /// The pixel shader entry point for this pass in `passes.hlsl`.
+    #[cfg(any(target_os = "windows", test))]
+    pub(crate) fn hlsl_entry(self) -> &'static str {
+        // Entry 0 is the vertex shader; the pixel shaders follow in pass order.
+        crate::PASS_ENTRY_POINTS[self.index() + 1].0
     }
 }
 
@@ -111,6 +119,7 @@ pub(crate) enum Slot {
 
 impl Slot {
     /// Sampler name in `passes.glsl`.
+    #[cfg(target_os = "linux")]
     pub(crate) fn glsl_name(self) -> &'static std::ffi::CStr {
         match self {
             Slot::Source => c"uSource",
@@ -122,6 +131,12 @@ impl Slot {
             Slot::ChromaU => c"uChromaU",
             Slot::ChromaV => c"uChromaV",
         }
+    }
+
+    /// Texture register in `passes.hlsl`: `t0` for `Source` up to `t7`.
+    #[cfg(any(target_os = "windows", test))]
+    pub(crate) fn hlsl_register(self) -> usize {
+        self as usize
     }
 }
 
@@ -144,6 +159,46 @@ pub(crate) struct PassParams {
     pub filter: i32,
     pub stop_offsets: [f32; 16],
     pub stop_colors: [[f32; 4]; 16],
+}
+
+/// Byte size of the `PassConstants` buffer in `passes.hlsl`.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const HLSL_CONSTANT_BYTES: usize = 448;
+
+/// `params` laid out as the `PassConstants` buffer in `passes.hlsl`, for a
+/// render target of `width` by `height`. Offsets follow the HLSL packing
+/// rules: members fill 16-byte registers in order, and arrays start a new
+/// register with one register per element.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn hlsl_constants(p: &PassParams, width: u32, height: u32) -> [u8; HLSL_CONSTANT_BYTES] {
+    fn f(buf: &mut [u8], at: usize, values: &[f32]) {
+        for (i, v) in values.iter().enumerate() {
+            buf[at + i * 4..at + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    fn i(buf: &mut [u8], at: usize, values: &[i32]) {
+        for (n, v) in values.iter().enumerate() {
+            buf[at + n * 4..at + n * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    let mut b = [0u8; HLSL_CONSTANT_BYTES];
+    let (w, h) = (width as f32, height as f32);
+    f(&mut b, 0, &[0.0, 0.0, w, h]); // Region
+    f(&mut b, 16, &[w, h]); // ViewportSize
+    i(&mut b, 24, &p.origin); // Origin
+    f(&mut b, 32, &p.shape); // Shape
+    f(&mut b, 48, &p.shadow_color); // ShadowColor
+    f(&mut b, 64, &p.geometry); // Geometry
+    i(&mut b, 80, &p.dst_rect); // DstRect
+    i(&mut b, 96, &p.axis); // Axis
+    i(&mut b, 104, &[p.radius, p.margin]); // Radius, Margin
+    f(&mut b, 112, &[p.corner]); // Corner
+    i(&mut b, 116, &[p.kind, p.stop_count, p.filter]); // Kind, StopCount, FilterMode
+    f(&mut b, 128, &p.stop_offsets); // StopOffsets: four float4
+    for (n, c) in p.stop_colors.iter().enumerate() {
+        f(&mut b, 192 + n * 16, c); // StopColors
+    }
+    b
 }
 
 /// What a device must do to run the passes.
@@ -713,5 +768,234 @@ impl<D: SharedDevice> ComposeBackend for DeviceBackend<D> {
             |d, t| blit(d, t, frame, desc),
             |t| compose::draw_blit(t, frame, desc),
         )
+    }
+}
+
+/// Helpers shared by the device backend tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use crate::{
+        BlitDesc, Compositor, Filter, GpuColor, GpuGradientStop, GpuRect, GradientDesc,
+        GradientShape, Nv12Surface, RgbaTarget, ShadowDesc, VideoFrame,
+    };
+
+    /// Longest one of these tests may take before it counts as hung.
+    pub(crate) const TEST_LIMIT: Duration = Duration::from_secs(60);
+
+    /// Run `f` on its own thread and fail if it panics or runs too long.
+    pub(crate) fn within_limit(f: impl FnOnce() + Send + 'static) {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            f();
+            let _ = tx.send(());
+        });
+        match rx.recv_timeout(TEST_LIMIT) {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the test body panicked"),
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("the test body ran past {TEST_LIMIT:?}"),
+        }
+    }
+
+    /// A shadow, two gradients, and three blits on a padded 50 by 40 target.
+    pub(crate) fn draw_scene(c: &mut Compositor) -> Vec<u8> {
+        const STRIDE: usize = 50 * 4 + 8;
+        let mut buf: Vec<u8> = (0..STRIDE * 40).map(|i| (i * 13 + 7) as u8).collect();
+        let mut t = RgbaTarget::new(&mut buf, 50, 40, STRIDE).unwrap();
+        let mut shadow = ShadowDesc::new(
+            GpuRect::new(8.0, 6.0, 22.0, 14.0),
+            GpuColor::rgba(5, 10, 40, 180),
+        );
+        shadow.blur_radius = 9.0;
+        shadow.corner_radius = 5.0;
+        shadow.offset_y = 3.0;
+        shadow.spread = 1.5;
+        c.box_shadow(&mut t, &shadow).unwrap();
+        let stops = [
+            GpuGradientStop::new(0.0, GpuColor::rgba(250, 120, 20, 255)),
+            GpuGradientStop::new(0.4, GpuColor::rgba(20, 220, 90, 128)),
+            GpuGradientStop::new(1.0, GpuColor::rgba(20, 80, 250, 200)),
+        ];
+        let linear = GradientDesc {
+            rect: GpuRect::new(2.0, 24.0, 30.0, 14.0),
+            shape: GradientShape::Linear {
+                start_x: 2.0,
+                start_y: 24.0,
+                end_x: 30.0,
+                end_y: 36.0,
+            },
+            stops: &stops,
+            clip: None,
+        };
+        c.fill_gradient(&mut t, &linear).unwrap();
+        let radial = GradientDesc {
+            rect: GpuRect::new(30.0, 2.0, 18.0, 20.0),
+            shape: GradientShape::Radial {
+                center_x: 39.0,
+                center_y: 12.0,
+                radius_x: 9.0,
+                radius_y: 6.0,
+            },
+            stops: &stops,
+            clip: Some(GpuRect::new(31.0, 3.0, 15.0, 15.0)),
+        };
+        c.fill_gradient(&mut t, &radial).unwrap();
+        let rgba: Vec<u8> = (0..7 * 5 * 4).map(|i| (i * 29 + 3) as u8).collect();
+        let surface = Nv12Surface::from_rgba_bt709(6, 4, &rgba[..6 * 4 * 4]).unwrap();
+        let u = [100u8, 120, 140, 160, 180, 200];
+        let v = [90u8, 70, 50, 150, 170, 190];
+        let i420 = VideoFrame::I420 {
+            y: &surface.y_plane,
+            y_stride: 6,
+            u: &u,
+            u_stride: 3,
+            v: &v,
+            v_stride: 3,
+            width: 6,
+            height: 4,
+        };
+        let frames = [
+            VideoFrame::Rgba {
+                pixels: &rgba,
+                width: 7,
+                height: 5,
+                stride: 28,
+            },
+            VideoFrame::from_nv12(&surface),
+            i420,
+        ];
+        for (n, frame) in frames.iter().enumerate() {
+            let mut blit = BlitDesc::new(34 + n as i32 * 3, 22 + n as i32 * 5, 13, 9);
+            blit.filter = if n == 1 {
+                Filter::Nearest
+            } else {
+                Filter::Bilinear
+            };
+            c.blit_frame(&mut t, frame, &blit).unwrap();
+        }
+        buf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn word(b: &[u8], at: usize) -> [u8; 4] {
+        b[at..at + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn hlsl_constants_follow_the_cbuffer_in_passes_hlsl() {
+        // The members, in order, as declared. The offsets used by
+        // hlsl_constants follow from this order and the HLSL packing rules.
+        let body = crate::PASSES_HLSL
+            .split_once("cbuffer PassConstants : register(b0)")
+            .and_then(|(_, rest)| rest.split_once("};"))
+            .map(|(body, _)| body)
+            .unwrap();
+        let members: Vec<&str> = body
+            .lines()
+            .map(|l| l.split("//").next().unwrap().trim())
+            .filter(|l| !l.is_empty() && *l != "{")
+            .collect();
+        assert_eq!(
+            members,
+            [
+                "float4 Region;",
+                "float2 ViewportSize;",
+                "int2 Origin;",
+                "float4 Shape;",
+                "float4 ShadowColor;",
+                "float4 Geometry;",
+                "int4 DstRect;",
+                "int2 Axis;",
+                "int Radius;",
+                "int Margin;",
+                "float Corner;",
+                "int Kind;",
+                "int StopCount;",
+                "int FilterMode;",
+                "float4 StopOffsets[MAX_STOPS / 4];",
+                "float4 StopColors[MAX_STOPS];",
+            ]
+        );
+        let mut p = PassParams {
+            origin: [-3, 4],
+            shape: [1.0, 2.0, 3.0, 4.0],
+            shadow_color: [5.0, 6.0, 7.0, 8.0],
+            geometry: [9.0, 10.0, 11.0, 12.0],
+            dst_rect: [13, 14, 15, 16],
+            axis: [0, 1],
+            radius: 17,
+            margin: 51,
+            corner: 2.5,
+            kind: 1,
+            stop_count: 16,
+            filter: 1,
+            ..PassParams::default()
+        };
+        for n in 0..16 {
+            p.stop_offsets[n] = n as f32 / 15.0;
+            p.stop_colors[n] = [n as f32, 1.0, 2.0, 255.0];
+        }
+        let b = hlsl_constants(&p, 37, 21);
+        let f = |v: f32| v.to_le_bytes();
+        let i = |v: i32| v.to_le_bytes();
+        assert_eq!(word(&b, 8), f(37.0));
+        assert_eq!(word(&b, 12), f(21.0));
+        assert_eq!(word(&b, 16), f(37.0));
+        assert_eq!(word(&b, 20), f(21.0));
+        assert_eq!(word(&b, 24), i(-3));
+        assert_eq!(word(&b, 28), i(4));
+        assert_eq!(word(&b, 32), f(1.0));
+        assert_eq!(word(&b, 60), f(8.0));
+        assert_eq!(word(&b, 64), f(9.0));
+        assert_eq!(word(&b, 92), i(16));
+        assert_eq!(word(&b, 100), i(1));
+        assert_eq!(word(&b, 104), i(17));
+        assert_eq!(word(&b, 108), i(51));
+        assert_eq!(word(&b, 112), f(2.5));
+        assert_eq!(word(&b, 116), i(1));
+        assert_eq!(word(&b, 120), i(16));
+        assert_eq!(word(&b, 124), i(1));
+        // StopOffsets[i / 4][i % 4], as StopOffset in the shader reads it.
+        assert_eq!(word(&b, 128 + 7 * 4), f(7.0 / 15.0));
+        assert_eq!(word(&b, 128 + 15 * 4), f(1.0));
+        assert_eq!(word(&b, 192 + 9 * 16), f(9.0));
+        assert_eq!(word(&b, 192 + 15 * 16 + 12), f(255.0));
+        assert_eq!(b.len(), 192 + 16 * 16);
+    }
+
+    #[test]
+    fn passes_map_to_their_hlsl_entries_and_registers() {
+        let entries: Vec<_> = Pass::ALL.iter().map(|p| p.hlsl_entry()).collect();
+        assert_eq!(
+            entries,
+            [
+                "PSShadowMask",
+                "PSBoxBlur",
+                "PSShadowPaint",
+                "PSGradient",
+                "PSBlitRgba",
+                "PSBlitNv12",
+                "PSBlitI420",
+            ]
+        );
+        for (slot, name) in [
+            (Slot::Source, "Source"),
+            (Slot::Mask, "Mask"),
+            (Slot::Dest, "Dest"),
+            (Slot::Frame, "Frame"),
+            (Slot::Luma, "Luma"),
+            (Slot::ChromaUv, "ChromaUV"),
+            (Slot::ChromaU, "ChromaU"),
+            (Slot::ChromaV, "ChromaV"),
+        ] {
+            let decl = format!(" {name} : register(t{});", slot.hlsl_register());
+            assert!(crate::PASSES_HLSL.contains(&decl), "{decl}");
+        }
     }
 }
