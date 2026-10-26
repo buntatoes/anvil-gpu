@@ -65,6 +65,9 @@ pub(crate) fn d3d_compile_with(
         error_msgs: *mut *mut Blob,
     ) -> i32;
 
+    // SAFETY: these are the documented kernel32 signatures. They are only
+    // called below with NUL-terminated names, and every result is checked
+    // for null before use.
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn LoadLibraryA(name: *const i8) -> *mut c_void;
@@ -185,6 +188,9 @@ pub(crate) fn d3d11_create_device() -> Option<(u32, &'static str)> {
         context: *mut *mut Unknown,
     ) -> i32;
 
+    // SAFETY: these are the documented kernel32 signatures. They are only
+    // called below with NUL-terminated names, and every result is checked
+    // for null before use.
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn LoadLibraryA(name: *const i8) -> *mut c_void;

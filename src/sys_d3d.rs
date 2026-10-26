@@ -31,6 +31,9 @@ use std::ptr::{NonNull, null, null_mut};
 
 use crate::gpu::TexFormat;
 
+// SAFETY: these are the documented kernel32 signatures. They are only
+// called below with NUL-terminated names, and every result is checked
+// for null before use.
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn LoadLibraryA(name: *const c_char) -> *mut c_void;
