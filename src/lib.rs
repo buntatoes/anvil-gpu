@@ -7,7 +7,7 @@
 //!   falls back to [`SoftwareBackend`] on any device error. [`probe_hardware`]
 //!   and [`select_backend`] decide whether a device is used. On Linux the
 //!   device is OpenGL 3.3 core through EGL, and on Windows Direct3D 11 (not
-//!   yet run on a Windows machine). Either is used only when its self-test
+//!   yet run with a real GPU). Either is used only when its self-test
 //!   scene matches the CPU bytes exactly; elsewhere everything is drawn on
 //!   the CPU.
 //! - [`render_frame_rgba`] rasterizes [`GpuQuad`] values into a straight RGBA8 framebuffer.
@@ -83,7 +83,7 @@ pub const PASSES_GLSL: &str = include_str!("../shaders/passes.glsl");
 ///
 /// On Windows, [`probe_hardware`] compiles every entry in [`PASS_ENTRY_POINTS`]
 /// to `DXBC`, and the Direct3D 11 device backend runs them. That backend has
-/// not been run on a Windows machine yet.
+/// not been run with a real GPU yet.
 pub const PASSES_HLSL: &str = include_str!("../shaders/passes.hlsl");
 
 /// Entry points and profiles in [`PASSES_HLSL`].
@@ -948,7 +948,9 @@ mod tests {
     #[test]
     fn pass_sources_name_every_pass_and_start_with_the_header() {
         for src in [PASSES_GLSL, PASSES_HLSL, COMPOSITOR_GLSL, COMPOSITOR_HLSL] {
-            assert!(src.starts_with(
+            // A Windows checkout may turn the shader files' line endings into
+            // CRLF, so compare with LF endings.
+            assert!(src.replace("\r\n", "\n").starts_with(
                 "// SPDX-License-Identifier: MPL-2.0\n// Copyright (c) 2026 Buntato\n"
             ));
         }

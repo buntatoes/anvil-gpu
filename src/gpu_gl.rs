@@ -44,9 +44,11 @@ pub(crate) struct GlDevice {
 fn sources(pass: Pass, faults: Faults) -> (String, String) {
     const VERSION: &str = "#version 330 core\n";
     // Comments may come before #version, but nothing else may; keep only
-    // what follows it and put the defines right after it.
+    // what follows its line and put the defines right after it. The line
+    // may end in CRLF if the file was checked out that way.
     let body = crate::PASSES_GLSL
-        .split_once(VERSION)
+        .split_once(VERSION.trim_end())
+        .and_then(|(_, rest)| rest.split_once('\n'))
         .map_or(crate::PASSES_GLSL, |(_, body)| body);
     let vertex = format!("{VERSION}#define VERTEX_SHADER\n{body}");
     let mut fragment = format!(
