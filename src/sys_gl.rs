@@ -18,7 +18,7 @@
 //! caller's buffer.
 //!
 //! EGL entry points: `eglGetProcAddress`, `eglQueryString`, `eglGetDisplay`,
-//! `eglGetPlatformDisplayEXT`, `eglInitialize`, `eglBindAPI`,
+//! `eglGetPlatformDisplayEXT`, `eglInitialize`, `eglBindAPI`, `eglQueryAPI`,
 //! `eglChooseConfig`, `eglCreateContext`, `eglDestroyContext`,
 //! `eglCreatePbufferSurface`, `eglDestroySurface`, `eglMakeCurrent`,
 //! `eglGetCurrentContext`, `eglGetCurrentDisplay`, `eglGetCurrentSurface`.
@@ -120,6 +120,7 @@ struct Egl {
     get_display: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     initialize: unsafe extern "C" fn(*mut c_void, *mut c_int, *mut c_int) -> c_uint,
     bind_api: unsafe extern "C" fn(c_uint) -> c_uint,
+    query_api: unsafe extern "C" fn() -> c_uint,
     choose_config: unsafe extern "C" fn(
         *mut c_void,
         *const c_int,
@@ -179,6 +180,7 @@ impl Egl {
                 get_display: symbol(lib, c"eglGetDisplay")?,
                 initialize: symbol(lib, c"eglInitialize")?,
                 bind_api: symbol(lib, c"eglBindAPI")?,
+                query_api: symbol(lib, c"eglQueryAPI")?,
                 choose_config: symbol(lib, c"eglChooseConfig")?,
                 create_context: symbol(lib, c"eglCreateContext")?,
                 destroy_context: symbol(lib, c"eglDestroyContext")?,
@@ -298,40 +300,77 @@ fn gl_lock() -> MutexGuard<'static, ()> {
     GL_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Whatever was current on this thread before, put back on drop.
+/// The thread's EGL rendering API, switched to desktop OpenGL and put back
+/// on drop, so a caller that uses OpenGL ES on the same thread keeps it.
+struct ApiGuard<'d> {
+    egl: &'d Egl,
+    api: c_uint,
+}
+
+impl<'d> ApiGuard<'d> {
+    fn bind(egl: &'d Egl) -> Result<Self, GlError> {
+        // SAFETY: eglQueryAPI takes nothing and returns this thread's API.
+        let api = unsafe { (egl.query_api)() };
+        // SAFETY: eglBindAPI takes a plain enum and only changes this
+        // thread's EGL state, which the guard puts back.
+        if unsafe { (egl.bind_api)(EGL_OPENGL_API) } == 0 {
+            return Err(GlError("EGL has no desktop OpenGL"));
+        }
+        Ok(ApiGuard { egl, api })
+    }
+}
+
+impl Drop for ApiGuard<'_> {
+    fn drop(&mut self) {
+        // SAFETY: as above; `api` is the value eglQueryAPI gave a moment
+        // ago, so it is one this EGL accepts. A failure leaves OpenGL bound.
+        unsafe { (self.egl.bind_api)(self.api) };
+    }
+}
+
+/// Whatever was current on this thread before, put back on drop. The
+/// rendering API is put back after that (field order).
 struct CurrentGuard<'d> {
     d: &'d EglDisplay,
     display: *mut c_void,
     draw: *mut c_void,
     read: *mut c_void,
     context: *mut c_void,
+    _api: ApiGuard<'d>,
 }
 
 impl<'d> CurrentGuard<'d> {
     /// Make `context` current with `surface`, remembering what was current.
     fn make(d: &'d EglDisplay, surface: Handle, context: Handle) -> Result<Self, GlError> {
         let egl = &d.egl;
+        // The current context is per API, so switch to OpenGL first.
+        let api = ApiGuard::bind(egl)?;
         // SAFETY: the eglGetCurrent* calls take no pointers and return
-        // handles (or null) for this thread.
-        let guard = unsafe {
-            CurrentGuard {
-                d,
-                display: (egl.get_current_display)(),
-                draw: (egl.get_current_surface)(EGL_DRAW),
-                read: (egl.get_current_surface)(EGL_READ),
-                context: (egl.get_current_context)(),
-            }
+        // handles (or null) for this thread and its OpenGL API.
+        let (display, draw, read, current) = unsafe {
+            (
+                (egl.get_current_display)(),
+                (egl.get_current_surface)(EGL_DRAW),
+                (egl.get_current_surface)(EGL_READ),
+                (egl.get_current_context)(),
+            )
         };
         // SAFETY: the display is initialized, and `context` and `surface`
         // (null when surfaceless) were created on it and are still alive:
         // they are only destroyed in GlContext::drop, which needs `&mut`.
         let ok = unsafe { (egl.make_current)(d.display.0, surface.0, surface.0, context.0) };
         if ok == 0 {
-            // Nothing changed, so there is nothing to put back.
-            std::mem::forget(guard);
+            // No context changed; dropping `api` puts the API back.
             return Err(GlError("eglMakeCurrent failed"));
         }
-        Ok(guard)
+        Ok(CurrentGuard {
+            d,
+            display,
+            draw,
+            read,
+            context: current,
+            _api: api,
+        })
     }
 }
 
@@ -511,11 +550,9 @@ impl GlContext {
         let d = egl_display().ok_or(GlError("no EGL display"))?;
         let egl = &d.egl;
         let _lock = gl_lock();
-        // SAFETY: eglBindAPI takes an enum and affects only this thread's
-        // later context calls, which happen below under the same lock.
-        if unsafe { (egl.bind_api)(EGL_OPENGL_API) } == 0 {
-            return Err(GlError("EGL has no desktop OpenGL"));
-        }
+        // eglChooseConfig and eglCreateContext below use the thread's
+        // rendering API; it is put back when this returns.
+        let _api = ApiGuard::bind(egl)?;
         let surface_bits = if d.surfaceless_context {
             0
         } else {
@@ -1033,5 +1070,36 @@ impl GlCurrent<'_> {
         }
         // Errors here change nothing for the next call; clear them.
         let _ = self.check("delete");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EGL_OPENGL_ES_API: c_uint = 0x30A0;
+
+    #[test]
+    fn the_callers_rendering_api_is_put_back() {
+        let Some(d) = egl_display() else {
+            eprintln!("skipped: no EGL display here");
+            return;
+        };
+        let Ok(mut context) = GlContext::create(ContextRequest::GL33) else {
+            eprintln!("skipped: no OpenGL 3.3 core context here");
+            return;
+        };
+        // A thread that uses OpenGL ES, as EGL starts every thread.
+        // SAFETY: eglBindAPI takes a plain enum and only changes this
+        // thread's EGL state; eglQueryAPI takes nothing.
+        unsafe {
+            assert_ne!((d.egl.bind_api)(EGL_OPENGL_ES_API), 0);
+        }
+        context.with_current(|gl| gl.max_side()).unwrap();
+        // SAFETY: as above.
+        assert_eq!(unsafe { (d.egl.query_api)() }, EGL_OPENGL_ES_API);
+        drop(context);
+        // SAFETY: as above.
+        assert_eq!(unsafe { (d.egl.query_api)() }, EGL_OPENGL_ES_API);
     }
 }
