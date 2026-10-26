@@ -8,8 +8,8 @@
 //! used. [`shared`] keeps one such device per process for
 //! [`crate::Compositor::open`].
 //!
-//! This has been built for Windows and type-checked, but never run on a
-//! Windows machine. Until it has, the self-test is what keeps a wrong
+//! This is built and tested on a Windows CI runner, which has no real GPU,
+//! and has never been run with one. Until it has, the self-test is what keeps a wrong
 //! result from being used: a device that does not match the software bytes
 //! leaves the compositor on software.
 

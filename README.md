@@ -18,9 +18,9 @@ Drawing for the compositor: blurred box shadows, linear and radial gradients, an
 
 | Pass | CPU | Linux, OpenGL 3.3 core | Windows, Direct3D 11 |
 | --- | --- | --- | --- |
-| Box shadow with blur | `draw_box_shadow` | runs (mask, six blur passes, paint) | written, not yet run on Windows |
-| Linear and radial gradients, up to 16 stops | `draw_gradient` | runs | written, not yet run on Windows |
-| RGBA, NV12, and I420 frame blit with scaling | `draw_blit` | runs | written, not yet run on Windows |
+| Box shadow with blur | `draw_box_shadow` | runs (mask, six blur passes, paint) | written, not yet run with a real GPU |
+| Linear and radial gradients, up to 16 stops | `draw_gradient` | runs | written, not yet run with a real GPU |
+| RGBA, NV12, and I420 frame blit with scaling | `draw_blit` | runs | written, not yet run with a real GPU |
 | Rounded boxes, borders, two-stop gradients, atlas quads | `render_frame_rgba`, `GpuDevice::render_quads` | CPU only | CPU only |
 
 `Compositor::box_shadow`, `fill_gradient`, and `blit_frame` use the device when there is one, and the CPU otherwise. `Compositor::software()` always uses the CPU.
@@ -56,7 +56,7 @@ If a device call fails (a GL error, a failed `Map`, a removed device), the compo
   - The shadow blur and the bilinear weights and sums of blits use integer math on both sides, so they cannot round differently on a device that follows the integer rules of GLSL and HLSL and reads 8-bit texels back as whole code values.
   - The shadow mask and paint, gradients, and the BT.709 conversion of nearest YUV blits use f32 math in the same order as the CPU. A driver may fuse a multiply and an add, which rounds once instead of twice. For the nearest YUV conversion that would move 20 of the 16.7 million possible Y, Cb, Cr triples one green code value; llvmpipe matched the CPU on all 16.7 million in one 4096 by 4096 test frame. The tests in this repository find no difference in these passes on llvmpipe, but that does not prove a hardware driver matches.
   - Gradients are exact in every test in this repository, but they are not proven exact on a device. In about 39,800 longer seeded scenes on llvmpipe, exactly one gradient byte differed, by one code value: seed 1234, case 83, call 5, pixel (150, 117), blue 26 on the CPU and 27 on the device, where the CPU's color mix before rounding was 26.499998. The likely reason is that GLSL and HLSL do not require division or square root to be exact, and a gradient divides twice (a radial one also takes a square root), so a mix that close to a half can round the other way. That cause has not been confirmed.
-- Windows: the Direct3D 11 path is built for `x86_64-pc-windows-gnu` and passes clippy, and the constant buffer layout is checked against `passes.hlsl` by a test that runs everywhere. It has never been run on a Windows machine, so its tests have never executed. Until they have, the self-test is what keeps it from being used if it is wrong.
+- Windows: the Direct3D 11 path is built for `x86_64-pc-windows-gnu` and passes clippy, and the constant buffer layout is checked against `passes.hlsl` by a test that runs everywhere. CI builds and runs the tests on a GitHub-hosted Windows runner, which has no real GPU, so whether a device opens there and what it draws says nothing about real hardware. It has never been run with a real GPU. Until it has, the self-test is what keeps it from being used if it is wrong.
 - Every GLSL pass and HLSL entry point passes `glslangValidator`.
 
 ### CPU changes on the way to 0.9.0

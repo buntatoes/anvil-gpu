@@ -2,7 +2,7 @@
 # RGBA/NV12/I420 frame blits, rounded-box tile quads, an RGBA shelf atlas, and
 # RGBA <-> NV12 conversion. shaders/passes.* and shaders/compositor.* are
 # included as source strings. The passes run through OpenGL 3.3 on Linux and
-# Direct3D 11 on Windows (not yet run there) when a self-test matches the CPU.
+# Direct3D 11 on Windows (not yet run with a real GPU) when a self-test matches the CPU.
 # Callers: anvil-raster (SDF and gradients, in anvil-engine) and anvil-video (NV12 planes).
 
 [package]

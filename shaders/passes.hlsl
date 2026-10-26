@@ -7,7 +7,7 @@
 // entry point below to DXBC with d3dcompiler_47.dll (see PASS_ENTRY_POINTS in
 // src/lib.rs), runs them on a Direct3D 11 device, and uses the device only if
 // a self-test scene matches the software bytes. That path has been built and
-// type-checked but not yet run on a Windows machine.
+// type-checked but not yet run with a real GPU.
 //
 // Entry points:
 // - VSPass: unit quad over the pass region.
