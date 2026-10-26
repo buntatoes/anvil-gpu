@@ -497,3 +497,14 @@ fn the_bilinear_i420_scene_that_was_one_code_apart_matches() {
     }
     scene(211, 0xb11e_0003, blit, false);
 }
+
+/// Seed 0x313e138c, case 27: call 6 paints a shadow whose blue channel came
+/// out at 0.5 - 2^-25 before rounding. The CPU rounded that to 0 and the
+/// device's floor(x + 0.5) to 1. Both now round the same way.
+#[test]
+fn the_shadow_paint_that_rounded_differently_matches() {
+    if device_or_skip("mixed scene 27").is_none() {
+        return;
+    }
+    scene(27, 0x313e_138c, shadow, true);
+}

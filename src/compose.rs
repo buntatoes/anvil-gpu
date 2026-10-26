@@ -231,7 +231,8 @@ fn target_bounds(
 /// Straight-alpha source-over of `src` with coverage `alpha` (0..=1).
 ///
 /// `out_a = sa + da * (1 - sa)` and `out_rgb = (s * sa + d * da * (1 - sa)) / out_a`,
-/// where `sa = src.a / 255 * alpha`. Each channel is rounded. This is the
+/// where `sa = src.a / 255 * alpha`. Each channel is rounded half up as
+/// `floor(x + 0.5)`. This is the
 /// `OverStraight` function in the shader passes.
 pub fn over_straight(dst: &mut [u8], src: GpuColor, alpha: f32) {
     let sa = (src.a as f32 / 255.0) * alpha.clamp(0.0, 1.0);
@@ -241,15 +242,17 @@ pub fn over_straight(dst: &mut [u8], src: GpuColor, alpha: f32) {
     let da = dst[3] as f32 / 255.0;
     let keep = da * (1.0 - sa);
     let oa = sa + keep;
+    // floor(x + 0.5), as in the shaders. f32::round differs for one value:
+    // 0.5 - 2^-25 rounds to 0, but adding 0.5 to it rounds up to 1.0.
     let mix = |s: u8, d: u8| {
-        ((s as f32 * sa + d as f32 * keep) / oa)
-            .round()
+        ((s as f32 * sa + d as f32 * keep) / oa + 0.5)
+            .floor()
             .clamp(0.0, 255.0) as u8
     };
     dst[0] = mix(src.r, dst[0]);
     dst[1] = mix(src.g, dst[1]);
     dst[2] = mix(src.b, dst[2]);
-    dst[3] = (oa * 255.0).round().clamp(0.0, 255.0) as u8;
+    dst[3] = (oa * 255.0 + 0.5).floor().clamp(0.0, 255.0) as u8;
 }
 
 /// A CSS-style box shadow: a rounded box, moved, grown, blurred, then painted.

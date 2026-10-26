@@ -884,13 +884,14 @@ fn modulate_color(a: GpuColor, b: GpuColor) -> GpuColor {
 }
 
 /// Straight per-channel lerp. `t` is not clamped here; gradient callers already clamp it.
+/// Rounds as `floor(x + 0.5)`, the same as the gradient pass in the shaders.
 fn lerp_color(a: GpuColor, b: GpuColor, t: f32) -> GpuColor {
     let inv = 1.0 - t;
     GpuColor {
-        r: ((a.r as f32) * inv + (b.r as f32) * t).round() as u8,
-        g: ((a.g as f32) * inv + (b.g as f32) * t).round() as u8,
-        b: ((a.b as f32) * inv + (b.b as f32) * t).round() as u8,
-        a: ((a.a as f32) * inv + (b.a as f32) * t).round() as u8,
+        r: ((a.r as f32) * inv + (b.r as f32) * t + 0.5).floor() as u8,
+        g: ((a.g as f32) * inv + (b.g as f32) * t + 0.5).floor() as u8,
+        b: ((a.b as f32) * inv + (b.b as f32) * t + 0.5).floor() as u8,
+        a: ((a.a as f32) * inv + (b.a as f32) * t + 0.5).floor() as u8,
     }
 }
 

@@ -31,8 +31,10 @@
 // straight-alpha source-over themselves, which fixed-function blending cannot
 // do for a target that is not opaque.
 //
-// Rounding: Rust f32::round and floor(x + 0.5) agree on every value that is
-// later clamped to 0..255, which is every place this file rounds.
+// Rounding: every place this file rounds uses floor(x + 0.5), and the CPU
+// code it mirrors does the same. Rust's f32::round is not used for those,
+// because it differs for 0.5 - 2^-25: round gives 0, while x + 0.5 rounds up
+// to 1.0 in f32.
 
 #version 330 core
 
