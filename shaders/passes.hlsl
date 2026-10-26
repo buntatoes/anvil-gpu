@@ -221,22 +221,58 @@ int NearestIndex(int d, int src, int dst)
     return min(((2 * d + 1) * src) / (2 * dst), src - 1);
 }
 
-// Two clamped taps and the weight of the second, as in taps.
-float3 Taps(float f, int size)
+// Bilinear taps along one axis, integer math as in fixed_taps: the two
+// clamped texel indices and the weight of the second, in 0..4095. The
+// division is split so every value stays below 2^31; the result is the same
+// as round((2d + 1) * src * 4096 / (2 dst)), halves up.
+int3 FixedTaps(int d, int src, int dst, int size)
 {
-    float fl = floor(f);
-    float last = float(size - 1);
-    return float3(clamp(fl, 0.0, last), clamp(fl + 1.0, 0.0, last), f - fl);
+    int n = (2 * d + 1) * src;
+    int den = 2 * dst;
+    int q = n / den;
+    int p = q * 4096 + (2 * (n - q * den) * 4096 + den) / (2 * den) + 2048;
+    int i = p / 4096 - 1;
+    return int3(clamp(i, 0, size - 1), clamp(i + 1, 0, size - 1), p - (p / 4096) * 4096);
 }
 
-float2 SourcePos(int2 l, int2 srcSize)
+// As bilinear_rgba: texels tl, tr, bl, br as 0..255 codes. Rows first, in
+// premultiplied color rounded to 1/16 steps, then the two rows; alpha
+// exactly. Every value stays below 2^32.
+uint4 BilinearRgba(uint4 tl, uint4 tr, uint4 bl, uint4 br, uint wx, uint wy)
 {
-    return (float2(l) + 0.5) * (float2(srcSize) / float2(DstRect.zw)) - 0.5;
+    uint ix = 4096u - wx;
+    uint iy = 4096u - wy;
+    uint3 top = (tl.rgb * (tl.a * ix) + tr.rgb * (tr.a * wx) + 128u) >> 8;
+    uint3 bottom = (bl.rgb * (bl.a * ix) + br.rgb * (br.a * wx) + 128u) >> 8;
+    uint alpha = (tl.a * ix + tr.a * wx) * iy + (bl.a * ix + br.a * wx) * wy;
+    uint alpha16 = (alpha + 128u) >> 8;
+    if (alpha16 == 0u)
+    {
+        return uint4(0u, 0u, 0u, 0u);
+    }
+    uint3 rgb = min((top * iy + bottom * wy + alpha16 / 2u) / alpha16, uint3(255u, 255u, 255u));
+    return uint4(rgb, min((alpha + 8388608u) >> 24, 255u));
 }
 
-float4 Weights(float3 tx, float3 ty)
+// As bilinear_plane: four codes (tl, tr, bl, br) to one value in 1/256 steps.
+uint BilinearPlane(uint4 t, uint wx, uint wy)
 {
-    return float4((1.0 - tx.z) * (1.0 - ty.z), tx.z * (1.0 - ty.z), (1.0 - tx.z) * ty.z, tx.z * ty.z);
+    uint ix = 4096u - wx;
+    uint iy = 4096u - wy;
+    // At most 255 * 2^24, which fits in 32 bits.
+    uint sum = t.x * (ix * iy) + t.y * (wx * iy) + t.z * (ix * wy) + t.w * (wx * wy);
+    return (sum + 32768u) >> 16;
+}
+
+// As bt709_fixed_to_rgb in src/compose.rs: code values in 1/256 steps,
+// integer coefficients in 1/8192 steps, rounded half up.
+float3 Bt709FixedToRgb(int y, int u, int v)
+{
+    int yf = max(y - 16 * 256, 0) * 9539;
+    int uf = u - 128 * 256;
+    int vf = v - 128 * 256;
+    int3 s = max(int3(yf + 14686 * vf, yf - 1747 * uf - 4366 * vf, yf + 17305 * uf), int3(0, 0, 0));
+    return float3(min((s + (1 << 20)) >> 21, int3(255, 255, 255)));
 }
 
 float4 FrameTexel(int x, int y)
@@ -257,26 +293,11 @@ float4 PSBlitRgba(float4 pos : SV_Position) : SV_Target
     }
     else
     {
-        float2 f = SourcePos(l, size);
-        float3 tx = Taps(f.x, size.x);
-        float3 ty = Taps(f.y, size.y);
-        float4 wt = Weights(tx, ty);
-        float4 s0 = FrameTexel(int(tx.x), int(ty.x));
-        float4 s1 = FrameTexel(int(tx.y), int(ty.x));
-        float4 s2 = FrameTexel(int(tx.x), int(ty.y));
-        float4 s3 = FrameTexel(int(tx.y), int(ty.y));
-        // Alpha-weighted, as on the CPU.
-        float4 a = float4(s0.a, s1.a, s2.a, s3.a) * wt;
-        float alpha = a.x + a.y + a.z + a.w;
-        if (alpha <= 0.0)
-        {
-            outColor = float4(0.0, 0.0, 0.0, 0.0);
-        }
-        else
-        {
-            float3 rgb = (s0.rgb * a.x + s1.rgb * a.y + s2.rgb * a.z + s3.rgb * a.w) / alpha;
-            outColor = float4(clamp(floor(rgb + 0.5), 0.0, 255.0), clamp(floor(alpha + 0.5), 0.0, 255.0));
-        }
+        int3 tx = FixedTaps(l.x, size.x, DstRect.z, size.x);
+        int3 ty = FixedTaps(l.y, size.y, DstRect.w, size.y);
+        uint4 c = BilinearRgba(uint4(FrameTexel(tx.x, ty.x)), uint4(FrameTexel(tx.y, ty.x)),
+                               uint4(FrameTexel(tx.x, ty.y)), uint4(FrameTexel(tx.y, ty.y)), uint(tx.z), uint(ty.z));
+        outColor = float4(c);
     }
     return outColor / 255.0;
 }
@@ -303,31 +324,33 @@ float4 BlitYuv(float4 pos, int planar)
     int2 size = int2(w, h);
     int2 csize = (size + 1) / 2;
     int2 l = int2(pos.xy) + Origin - DstRect.xy;
-    float y;
-    float2 uv;
+    float3 rgb;
     if (FilterMode == 0)
     {
         int tx = NearestIndex(l.x, size.x, DstRect.z);
         int ty = NearestIndex(l.y, size.y, DstRect.w);
-        y = LumaTexel(tx, ty);
-        uv = ChromaTexel(tx / 2, ty / 2, planar);
+        float2 uv = ChromaTexel(tx / 2, ty / 2, planar);
+        rgb = Bt709ToRgb(LumaTexel(tx, ty), uv.x, uv.y);
     }
     else
     {
-        float2 f = SourcePos(l, size);
-        float3 tx = Taps(f.x, size.x);
-        float3 ty = Taps(f.y, size.y);
-        float4 wt = Weights(tx, ty);
-        y = LumaTexel(int(tx.x), int(ty.x)) * wt.x + LumaTexel(int(tx.y), int(ty.x)) * wt.y
-          + LumaTexel(int(tx.x), int(ty.y)) * wt.z + LumaTexel(int(tx.y), int(ty.y)) * wt.w;
-        // Chroma centers sit at the middle of each 2 by 2 luma block.
-        float3 cx = Taps((f.x + 0.5) * 0.5 - 0.5, csize.x);
-        float3 cy = Taps((f.y + 0.5) * 0.5 - 0.5, csize.y);
-        float4 cw = Weights(cx, cy);
-        uv = ChromaTexel(int(cx.x), int(cy.x), planar) * cw.x + ChromaTexel(int(cx.y), int(cy.x), planar) * cw.y
-           + ChromaTexel(int(cx.x), int(cy.y), planar) * cw.z + ChromaTexel(int(cx.y), int(cy.y), planar) * cw.w;
+        int3 tx = FixedTaps(l.x, size.x, DstRect.z, size.x);
+        int3 ty = FixedTaps(l.y, size.y, DstRect.w, size.y);
+        uint y = BilinearPlane(uint4(LumaTexel(tx.x, ty.x), LumaTexel(tx.y, ty.x), LumaTexel(tx.x, ty.y), LumaTexel(tx.y, ty.y)),
+                               uint(tx.z), uint(ty.z));
+        // Chroma texels are twice as wide, so their centers sit at the middle
+        // of each 2 by 2 luma block.
+        int3 cx = FixedTaps(l.x, size.x, 2 * DstRect.z, csize.x);
+        int3 cy = FixedTaps(l.y, size.y, 2 * DstRect.w, csize.y);
+        float2 c0 = ChromaTexel(cx.x, cy.x, planar);
+        float2 c1 = ChromaTexel(cx.y, cy.x, planar);
+        float2 c2 = ChromaTexel(cx.x, cy.y, planar);
+        float2 c3 = ChromaTexel(cx.y, cy.y, planar);
+        uint u = BilinearPlane(uint4(c0.x, c1.x, c2.x, c3.x), uint(cx.z), uint(cy.z));
+        uint v = BilinearPlane(uint4(c0.y, c1.y, c2.y, c3.y), uint(cx.z), uint(cy.z));
+        rgb = Bt709FixedToRgb(int(y), int(u), int(v));
     }
-    return float4(Bt709ToRgb(y, uv.x, uv.y), 255.0) / 255.0;
+    return float4(rgb, 255.0) / 255.0;
 }
 
 float4 PSBlitNv12(float4 pos : SV_Position) : SV_Target

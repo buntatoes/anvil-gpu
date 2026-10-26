@@ -328,3 +328,129 @@ fn blit_case(gpu: &mut Compositor, case: u64) {
 fn rgba_nv12_and_i420_blits_with_both_filters_match_software() {
     run_cases("blit", 360, blit_case);
 }
+
+/// Bilinear blits only: frames from 1 by 1 to 64 by 64 scaled far down, a
+/// little down, and far up, thin frames whose taps clamp at both edges,
+/// rectangles hanging off every side of the target, padded planes, and RGBA
+/// frames with clear and opaque texels next to each other.
+fn bilinear_case(gpu: &mut Compositor, case: u64) {
+    let mut rng = Rng::new(0xB111_0000 + case);
+    let t = Target::random(&mut rng);
+    let side = |rng: &mut Rng| match rng.below(4) {
+        0 => 1 + rng.below(3) as usize,
+        _ => 1 + rng.below(64) as usize,
+    };
+    let (w, h) = (side(&mut rng), side(&mut rng));
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let pad = |rng: &mut Rng| rng.below(2) as usize * rng.below(13) as usize;
+    let (s0, s1, s2) = (
+        w * 4 + pad(&mut rng),
+        w + pad(&mut rng),
+        cw * 2 + pad(&mut rng),
+    );
+    let (s3, s4) = (cw + pad(&mut rng), cw + pad(&mut rng));
+    let mut rgba = rng.bytes(s0 * h);
+    if rng.below(2) == 0 {
+        // Alpha only 0 or 255, so clear texels sit next to opaque ones.
+        for a in rgba.iter_mut().skip(3).step_by(4) {
+            *a = if *a < 128 { 0 } else { 255 };
+        }
+    }
+    let luma = rng.bytes(s1 * h);
+    let uv = rng.bytes(s2 * ch);
+    let u = rng.bytes(s3 * ch);
+    let v = rng.bytes(s4 * ch);
+    let frame = match case % 3 {
+        0 => VideoFrame::Rgba {
+            pixels: &rgba,
+            width: w as u32,
+            height: h as u32,
+            stride: s0,
+        },
+        1 => VideoFrame::Nv12 {
+            y: &luma,
+            y_stride: s1,
+            uv: &uv,
+            uv_stride: s2,
+            width: w as u32,
+            height: h as u32,
+        },
+        _ => VideoFrame::I420 {
+            y: &luma,
+            y_stride: s1,
+            u: &u,
+            u_stride: s3,
+            v: &v,
+            v_stride: s4,
+            width: w as u32,
+            height: h as u32,
+        },
+    };
+    // Destination size per axis: far down, a little down, the same, or up
+    // to eight times up.
+    let scale = |rng: &mut Rng, src: usize| -> u32 {
+        let src = src as u64;
+        (match rng.below(4) {
+            0 => 1 + rng.below(src.div_ceil(3)),
+            1 => 1 + rng.below(src),
+            2 => src,
+            _ => src + rng.below(7 * src + 2),
+        }) as u32
+    };
+    let (dw, dh) = (scale(&mut rng, w), scale(&mut rng, h));
+    // Anywhere from fully left of or above the target to past its far side.
+    let x = rng.below(t.width as u64 + dw as u64 + 4) as i32 - dw as i32 - 2;
+    let y = rng.below(t.height as u64 + dh as u64 + 4) as i32 - dh as i32 - 2;
+    let mut d = BlitDesc::new(x, y, dw, dh);
+    d.filter = Filter::Bilinear;
+    if rng.below(4) == 0 {
+        d.clip = rng.clip();
+    }
+    same_on_both(
+        &format!("bilinear {case}: frame {w}x{h} {d:?}"),
+        gpu,
+        &t,
+        |c, t| c.blit_frame(t, &frame, &d),
+    );
+}
+
+#[test]
+fn bilinear_rgba_nv12_and_i420_blits_scaled_up_and_down_match_software() {
+    run_cases("bilinear blit", 900, bilinear_case);
+}
+
+/// The bilinear I420 blit from the review that came out one code apart on
+/// the device when the weights were floats: an 18 by 9 frame scaled to 425
+/// by 88 at (184, -3) on a 224 by 54 target, with padded planes. The frame
+/// bytes here are seeded, not the review's, so this checks the same
+/// geometry, not the same values; tests/device_differential.rs replays the
+/// exact case.
+#[test]
+fn bilinear_i420_18x9_to_425x88_matches_software() {
+    run_cases("bilinear i420 425x88", 40, |gpu, case| {
+        let mut rng = Rng::new(0x0425_0088 + case);
+        let (w, h, stride) = (224u32, 54u32, 904usize);
+        let t = Target {
+            pixels: rng.bytes(stride * h as usize),
+            width: w,
+            height: h,
+            stride,
+        };
+        let (luma, u, v) = (rng.bytes(21 * 9), rng.bytes(9 * 5), rng.bytes(9 * 5));
+        let frame = VideoFrame::I420 {
+            y: &luma,
+            y_stride: 21,
+            u: &u,
+            u_stride: 9,
+            v: &v,
+            v_stride: 9,
+            width: 18,
+            height: 9,
+        };
+        let mut d = BlitDesc::new(184, -3, 425, 88);
+        d.filter = Filter::Bilinear;
+        same_on_both(&format!("bilinear i420 425x88 {case}"), gpu, &t, |c, t| {
+            c.blit_frame(t, &frame, &d)
+        });
+    });
+}

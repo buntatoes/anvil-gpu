@@ -816,7 +816,7 @@ pub fn draw_gradient(
 /// luma pixel to the right, which shows only as slight color fringes on
 /// sharp color edges. [`Filter::Nearest`] uses the block's chroma as is, so
 /// siting does not change it. The GLSL and HLSL blit passes use the same
-/// center siting, so all backends give the same bytes.
+/// center siting and the same integer bilinear math.
 #[derive(Clone, Copy, Debug)]
 pub enum VideoFrame<'f> {
     /// Straight RGBA8, `stride` bytes per row.
@@ -1029,10 +1029,11 @@ pub(crate) fn blit_bounds(
     Ok(b.intersect(area))
 }
 
-/// Limited-range BT.709 to RGB from (possibly filtered) 8-bit code values.
+/// Limited-range BT.709 to RGB from 8-bit code values, in f32.
 ///
 /// Same coefficients and rounding as [`crate::bt709_yuv_to_rgba`], so whole
-/// code values give the same bytes.
+/// code values give the same bytes. Nearest blits use it; bilinear blits use
+/// an integer version so that devices match exactly.
 pub fn bt709_yuv_f32_to_rgb(y: f32, u: f32, v: f32) -> [u8; 3] {
     let yf = (y - 16.0).max(0.0) * 1.164384;
     let uf = u - 128.0;
@@ -1052,14 +1053,105 @@ fn nearest_index(d: u64, src: u64, dst: u64) -> usize {
     (((2 * d + 1) * src) / (2 * dst)).min(src - 1) as usize
 }
 
-/// Bilinear taps along one axis: two clamped indices and the weight of the second.
-fn taps(f: f32, size: usize) -> (usize, usize, f32) {
-    let fl = f.floor();
-    let w = f - fl;
-    let last = size as f32 - 1.0;
-    let i0 = fl.clamp(0.0, last) as usize;
-    let i1 = (fl + 1.0).clamp(0.0, last) as usize;
-    (i0, i1, w)
+/// Bilinear weights along one axis are whole multiples of `1 / BILINEAR_ONE`.
+///
+/// Positions, weights, and sums are integers, on the CPU and in the shader
+/// passes alike, and every sum fits in 32 bits as the shaders need. So a
+/// device that runs the passes gives the same bytes: there is no float sum
+/// that could land on a rounding boundary one way here and the other way on
+/// the device.
+const BILINEAR_ONE: u64 = 4096;
+
+/// Bilinear taps along one axis for destination pixel `d`: two clamped
+/// texel indices and the weight of the second, in `0..BILINEAR_ONE`.
+///
+/// The sample position is `(d + 0.5) * src / dst - 0.5` texels, rounded to
+/// the nearest multiple of `1 / BILINEAR_ONE` (halves up). `dst` is the
+/// destination size, times two for chroma, whose texels are twice as wide;
+/// that puts chroma centers in the middle of each 2 by 2 luma block.
+fn fixed_taps(d: u64, src: u64, dst: u64, size: usize) -> (usize, usize, u64) {
+    // The position plus one half texel, which is never below zero:
+    // round((2d + 1) * src * ONE / (2 dst)). The shader splits this
+    // division to stay inside 32 bits; the result is the same.
+    let den = 2 * dst;
+    let p = (2 * (2 * d + 1) * src * BILINEAR_ONE + den) / (2 * den);
+    // Shift by the half texel the other way, staying at or above zero.
+    let p = p + BILINEAR_ONE / 2;
+    let w = p % BILINEAR_ONE;
+    // `p / BILINEAR_ONE - 1` is the texel at or left of the sample.
+    let i = (p / BILINEAR_ONE) as i64 - 1;
+    let last = size as i64 - 1;
+    (
+        i.clamp(0, last) as usize,
+        (i + 1).clamp(0, last) as usize,
+        w,
+    )
+}
+
+/// Limited-range BT.709 to RGB from code values in 1/256 steps.
+///
+/// Integer coefficients in 1/8192 steps, so the CPU and the shader passes
+/// give the same bytes. Whole code values can come out one step away from
+/// [`bt709_yuv_f32_to_rgb`], which nearest blits use.
+fn bt709_fixed_to_rgb(y: i64, u: i64, v: i64) -> [u8; 3] {
+    let yf = (y - 16 * 256).max(0) * 9539;
+    let uf = u - 128 * 256;
+    let vf = v - 128 * 256;
+    // Rounded half up from 1/(256 * 8192) steps. Below zero is clamped first.
+    let out = |s: i64| ((s.max(0) + (1 << 20)) >> 21).min(255) as u8;
+    [
+        out(yf + 14686 * vf),
+        out(yf - 1747 * uf - 4366 * vf),
+        out(yf + 17305 * uf),
+    ]
+}
+
+/// One bilinear RGBA sample, alpha-weighted, from the four texels
+/// `[top left, top right, bottom left, bottom right]`.
+///
+/// Rows first: each row is mixed along x in premultiplied color, rounded to
+/// 1/16 steps, then the two rows are mixed along y. Alpha is mixed exactly.
+/// Every intermediate value stays below 2^32.
+fn bilinear_rgba(texels: [[u8; 4]; 4], wx: u64, wy: u64) -> [u8; 4] {
+    let one = BILINEAR_ONE;
+    let row = |l: [u8; 4], r: [u8; 4]| {
+        let (al, ar) = (l[3] as u64, r[3] as u64);
+        let mut pre = [0u64; 3];
+        for (c, p) in pre.iter_mut().enumerate() {
+            let v = l[c] as u64 * al * (one - wx) + r[c] as u64 * ar * wx;
+            *p = (v + 128) >> 8;
+        }
+        (pre, al * (one - wx) + ar * wx)
+    };
+    let (top, top_a) = row(texels[0], texels[1]);
+    let (bottom, bottom_a) = row(texels[2], texels[3]);
+    let alpha = top_a * (one - wy) + bottom_a * wy;
+    // Alpha in 1/65536 steps, to match the color sums.
+    let alpha16 = (alpha + 128) >> 8;
+    if alpha16 == 0 {
+        return [0, 0, 0, 0];
+    }
+    let mut out = [0u8; 4];
+    for c in 0..3 {
+        let v = top[c] * (one - wy) + bottom[c] * wy;
+        out[c] = ((v + alpha16 / 2) / alpha16).min(255) as u8;
+    }
+    out[3] = ((alpha + (1 << 23)) >> 24).min(255) as u8;
+    out
+}
+
+/// One bilinear plane sample from four code values, in 1/256 steps.
+fn bilinear_plane(texels: [u8; 4], wx: u64, wy: u64) -> i64 {
+    let one = BILINEAR_ONE;
+    let k = [
+        (one - wx) * (one - wy),
+        wx * (one - wy),
+        (one - wx) * wy,
+        wx * wy,
+    ];
+    // At most 255 * 2^24, which fits in 32 bits.
+    let sum: u64 = texels.iter().zip(&k).map(|(&t, &k)| t as u64 * k).sum();
+    ((sum + (1 << 15)) >> 16) as i64
 }
 
 /// Copy (and scale and convert) a frame into the target in software.
@@ -1073,8 +1165,6 @@ pub fn draw_blit(
     };
     let (sw, sh) = (frame.width() as usize, frame.height() as usize);
     let (cw, ch) = (sw.div_ceil(2), sh.div_ceil(2));
-    let sx_scale = sw as f32 / desc.width as f32;
-    let sy_scale = sh as f32 / desc.height as f32;
     for y in bounds.y0..bounds.y1 {
         let ly = (y as i64 - desc.y as i64) as u64;
         for x in bounds.x0..bounds.x1 {
@@ -1093,63 +1183,39 @@ pub fn draw_blit(
                     }
                 }
                 Filter::Bilinear => {
-                    // Texel-space position of the pixel center, texel centers at whole numbers.
-                    let fx = (lx as f32 + 0.5) * sx_scale - 0.5;
-                    let fy = (ly as f32 + 0.5) * sy_scale - 0.5;
-                    let (x0, x1, wx) = taps(fx, sw);
-                    let (y0, y1, wy) = taps(fy, sh);
-                    let weights = [
-                        (1.0 - wx) * (1.0 - wy),
-                        wx * (1.0 - wy),
-                        (1.0 - wx) * wy,
-                        wx * wy,
-                    ];
-                    let at = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
+                    let (dw, dh) = (desc.width as u64, desc.height as u64);
+                    let (x0, x1, wx) = fixed_taps(lx, sw as u64, dw, sw);
+                    let (y0, y1, wy) = fixed_taps(ly, sh as u64, dh, sh);
                     match frame {
-                        VideoFrame::Rgba { .. } => {
-                            let mut acc = [0f32; 4];
-                            for (&(tx, ty), &k) in at.iter().zip(&weights) {
-                                let p = frame.rgba(tx, ty);
-                                let a = p[3] as f32 * k;
-                                acc[0] += p[0] as f32 * a;
-                                acc[1] += p[1] as f32 * a;
-                                acc[2] += p[2] as f32 * a;
-                                acc[3] += a;
-                            }
-                            if acc[3] <= 0.0 {
-                                [0, 0, 0, 0]
-                            } else {
-                                let c = |v: f32| (v / acc[3]).round().clamp(0.0, 255.0) as u8;
-                                [
-                                    c(acc[0]),
-                                    c(acc[1]),
-                                    c(acc[2]),
-                                    acc[3].round().clamp(0.0, 255.0) as u8,
-                                ]
-                            }
-                        }
+                        VideoFrame::Rgba { .. } => bilinear_rgba(
+                            [
+                                frame.rgba(x0, y0),
+                                frame.rgba(x1, y0),
+                                frame.rgba(x0, y1),
+                                frame.rgba(x1, y1),
+                            ],
+                            wx,
+                            wy,
+                        ),
                         _ => {
-                            let mut luma = 0f32;
-                            for (&(tx, ty), &k) in at.iter().zip(&weights) {
-                                luma += frame.luma(tx, ty) * k;
-                            }
-                            // Chroma centers sit at the middle of each 2 by 2 luma block.
-                            let (c0, c1, cwx) = taps((fx + 0.5) * 0.5 - 0.5, cw);
-                            let (r0, r1, cwy) = taps((fy + 0.5) * 0.5 - 0.5, ch);
-                            let cweights = [
-                                (1.0 - cwx) * (1.0 - cwy),
-                                cwx * (1.0 - cwy),
-                                (1.0 - cwx) * cwy,
-                                cwx * cwy,
-                            ];
-                            let cat = [(c0, r0), (c1, r0), (c0, r1), (c1, r1)];
-                            let (mut u, mut v) = (0f32, 0f32);
-                            for (&(tx, ty), &k) in cat.iter().zip(&cweights) {
-                                let (cu, cv) = frame.chroma(tx, ty);
-                                u += cu * k;
-                                v += cv * k;
-                            }
-                            let [r, g, b] = bt709_yuv_f32_to_rgb(luma, u, v);
+                            let code = |v: f32| v as u8;
+                            let luma = bilinear_plane(
+                                [
+                                    code(frame.luma(x0, y0)),
+                                    code(frame.luma(x1, y0)),
+                                    code(frame.luma(x0, y1)),
+                                    code(frame.luma(x1, y1)),
+                                ],
+                                wx,
+                                wy,
+                            );
+                            let (c0, c1, cwx) = fixed_taps(lx, sw as u64, 2 * dw, cw);
+                            let (r0, r1, cwy) = fixed_taps(ly, sh as u64, 2 * dh, ch);
+                            let at = [(c0, r0), (c1, r0), (c0, r1), (c1, r1)];
+                            let chroma = at.map(|(tx, ty)| frame.chroma(tx, ty));
+                            let u = bilinear_plane(chroma.map(|c| code(c.0)), cwx, cwy);
+                            let v = bilinear_plane(chroma.map(|c| code(c.1)), cwx, cwy);
+                            let [r, g, b] = bt709_fixed_to_rgb(luma, u, v);
                             [r, g, b, 255]
                         }
                     }

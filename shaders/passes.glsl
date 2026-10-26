@@ -3,9 +3,9 @@
 // GLSL 330 core compositor passes. Author: Buntato.
 //
 // These passes are the device side of src/compose.rs. They do the same math
-// in the same order, and the shadow mask is blurred in exact fixed point, so
-// a device that follows IEEE f32 rules gives the same bytes as the software
-// passes. On Linux, src/gpu_gl.rs builds one program per pass in an OpenGL
+// in the same order. The shadow blur and bilinear blits are integer math, so
+// they give the software bytes on any device; the f32 parts give them on a
+// device that does not fuse or reorder those operations. On Linux, src/gpu_gl.rs builds one program per pass in an OpenGL
 // 3.3 core context and draws a self-test scene; the device is only used when
 // that scene matches the software bytes. See README.md for what runs where.
 //
@@ -240,24 +240,53 @@ int NearestIndex(int d, int src, int dst)
     return min(((2 * d + 1) * src) / (2 * dst), src - 1);
 }
 
-// Two clamped taps and the weight of the second, as in taps.
-vec3 Taps(float f, int size)
+// Bilinear taps along one axis, integer math as in fixed_taps: the two
+// clamped texel indices and the weight of the second, in 0..4095. The
+// division is split so every value stays below 2^31; the result is the same
+// as round((2d + 1) * src * 4096 / (2 dst)), halves up.
+ivec3 FixedTaps(int d, int src, int dst, int size)
 {
-    float fl = floor(f);
-    float last = float(size - 1);
-    return vec3(clamp(fl, 0.0, last), clamp(fl + 1.0, 0.0, last), f - fl);
+    int n = (2 * d + 1) * src;
+    int den = 2 * dst;
+    int q = n / den;
+    int p = q * 4096 + (2 * (n - q * den) * 4096 + den) / (2 * den) + 2048;
+    int i = p / 4096 - 1;
+    return ivec3(clamp(i, 0, size - 1), clamp(i + 1, 0, size - 1), p - (p / 4096) * 4096);
+}
+
+// As bilinear_rgba: texels tl, tr, bl, br as 0..255 codes. Rows first, in
+// premultiplied color rounded to 1/16 steps, then the two rows; alpha
+// exactly. Every value stays below 2^32.
+uvec4 BilinearRgba(uvec4 tl, uvec4 tr, uvec4 bl, uvec4 br, uint wx, uint wy)
+{
+    uint ix = 4096u - wx;
+    uint iy = 4096u - wy;
+    uvec3 top = (tl.rgb * (tl.a * ix) + tr.rgb * (tr.a * wx) + 128u) >> 8;
+    uvec3 bottom = (bl.rgb * (bl.a * ix) + br.rgb * (br.a * wx) + 128u) >> 8;
+    uint alpha = (tl.a * ix + tr.a * wx) * iy + (bl.a * ix + br.a * wx) * wy;
+    uint alpha16 = (alpha + 128u) >> 8;
+    if (alpha16 == 0u)
+    {
+        return uvec4(0u, 0u, 0u, 0u);
+    }
+    uvec3 rgb = min((top * iy + bottom * wy + alpha16 / 2u) / alpha16, uvec3(255u, 255u, 255u));
+    return uvec4(rgb, min((alpha + 8388608u) >> 24, 255u));
+}
+
+// As bilinear_plane: four codes (tl, tr, bl, br) to one value in 1/256 steps.
+uint BilinearPlane(uvec4 t, uint wx, uint wy)
+{
+    uint ix = 4096u - wx;
+    uint iy = 4096u - wy;
+    // At most 255 * 2^24, which fits in 32 bits.
+    uint sum = t.x * (ix * iy) + t.y * (wx * iy) + t.z * (ix * wy) + t.w * (wx * wy);
+    return (sum + 32768u) >> 16;
 }
 
 // Destination pixel relative to the blit rectangle.
 ivec2 LocalPixel()
 {
     return RegionPixel() + uOrigin - uDstRect.xy;
-}
-
-// Texel-space position of the pixel center for bilinear sampling.
-vec2 SourcePos(ivec2 l, ivec2 srcSize)
-{
-    return (vec2(l) + 0.5) * (vec2(srcSize) / vec2(uDstRect.zw)) - 0.5;
 }
 #endif
 
@@ -280,26 +309,11 @@ void main()
     }
     else
     {
-        vec2 f = SourcePos(l, size);
-        vec3 tx = Taps(f.x, size.x);
-        vec3 ty = Taps(f.y, size.y);
-        vec4 w = vec4((1.0 - tx.z) * (1.0 - ty.z), tx.z * (1.0 - ty.z), (1.0 - tx.z) * ty.z, tx.z * ty.z);
-        vec4 s0 = Texel(int(tx.x), int(ty.x));
-        vec4 s1 = Texel(int(tx.y), int(ty.x));
-        vec4 s2 = Texel(int(tx.x), int(ty.y));
-        vec4 s3 = Texel(int(tx.y), int(ty.y));
-        // Alpha-weighted, as on the CPU.
-        vec4 a = vec4(s0.a, s1.a, s2.a, s3.a) * w;
-        float alpha = a.x + a.y + a.z + a.w;
-        if (alpha <= 0.0)
-        {
-            outColor = vec4(0.0);
-        }
-        else
-        {
-            vec3 rgb = (s0.rgb * a.x + s1.rgb * a.y + s2.rgb * a.z + s3.rgb * a.w) / alpha;
-            outColor = vec4(clamp(floor(rgb + 0.5), 0.0, 255.0), clamp(floor(alpha + 0.5), 0.0, 255.0));
-        }
+        ivec3 tx = FixedTaps(l.x, size.x, uDstRect.z, size.x);
+        ivec3 ty = FixedTaps(l.y, size.y, uDstRect.w, size.y);
+        uvec4 c = BilinearRgba(uvec4(Texel(tx.x, ty.x)), uvec4(Texel(tx.y, ty.x)),
+                               uvec4(Texel(tx.x, ty.y)), uvec4(Texel(tx.y, ty.y)), uint(tx.z), uint(ty.z));
+        outColor = vec4(c);
     }
     FragColor = outColor / 255.0;
 }
@@ -329,36 +343,49 @@ vec2 Chroma(int x, int y)
 #endif
 }
 
+// As bt709_fixed_to_rgb in src/compose.rs: code values in 1/256 steps,
+// integer coefficients in 1/8192 steps, rounded half up.
+vec3 Bt709FixedToRgb(int y, int u, int v)
+{
+    int yf = max(y - 16 * 256, 0) * 9539;
+    int uf = u - 128 * 256;
+    int vf = v - 128 * 256;
+    ivec3 s = max(ivec3(yf + 14686 * vf, yf - 1747 * uf - 4366 * vf, yf + 17305 * uf), ivec3(0));
+    return vec3(min((s + (1 << 20)) >> 21, ivec3(255)));
+}
+
 void main()
 {
     ivec2 size = textureSize(uLuma, 0);
     ivec2 csize = (size + 1) / 2;
     ivec2 l = LocalPixel();
-    float y;
-    vec2 uv;
+    vec3 rgb;
     if (uFilter == 0)
     {
         int tx = NearestIndex(l.x, size.x, uDstRect.z);
         int ty = NearestIndex(l.y, size.y, uDstRect.w);
-        y = Luma(tx, ty);
-        uv = Chroma(tx / 2, ty / 2);
+        vec2 uv = Chroma(tx / 2, ty / 2);
+        rgb = Bt709ToRgb(Luma(tx, ty), uv.x, uv.y);
     }
     else
     {
-        vec2 f = SourcePos(l, size);
-        vec3 tx = Taps(f.x, size.x);
-        vec3 ty = Taps(f.y, size.y);
-        vec4 w = vec4((1.0 - tx.z) * (1.0 - ty.z), tx.z * (1.0 - ty.z), (1.0 - tx.z) * ty.z, tx.z * ty.z);
-        y = Luma(int(tx.x), int(ty.x)) * w.x + Luma(int(tx.y), int(ty.x)) * w.y
-          + Luma(int(tx.x), int(ty.y)) * w.z + Luma(int(tx.y), int(ty.y)) * w.w;
-        // Chroma centers sit at the middle of each 2 by 2 luma block.
-        vec3 cx = Taps((f.x + 0.5) * 0.5 - 0.5, csize.x);
-        vec3 cy = Taps((f.y + 0.5) * 0.5 - 0.5, csize.y);
-        vec4 cw = vec4((1.0 - cx.z) * (1.0 - cy.z), cx.z * (1.0 - cy.z), (1.0 - cx.z) * cy.z, cx.z * cy.z);
-        uv = Chroma(int(cx.x), int(cy.x)) * cw.x + Chroma(int(cx.y), int(cy.x)) * cw.y
-           + Chroma(int(cx.x), int(cy.y)) * cw.z + Chroma(int(cx.y), int(cy.y)) * cw.w;
+        ivec3 tx = FixedTaps(l.x, size.x, uDstRect.z, size.x);
+        ivec3 ty = FixedTaps(l.y, size.y, uDstRect.w, size.y);
+        uint y = BilinearPlane(uvec4(Luma(tx.x, ty.x), Luma(tx.y, ty.x), Luma(tx.x, ty.y), Luma(tx.y, ty.y)),
+                               uint(tx.z), uint(ty.z));
+        // Chroma texels are twice as wide, so their centers sit at the middle
+        // of each 2 by 2 luma block.
+        ivec3 cx = FixedTaps(l.x, size.x, 2 * uDstRect.z, csize.x);
+        ivec3 cy = FixedTaps(l.y, size.y, 2 * uDstRect.w, csize.y);
+        vec2 c0 = Chroma(cx.x, cy.x);
+        vec2 c1 = Chroma(cx.y, cy.x);
+        vec2 c2 = Chroma(cx.x, cy.y);
+        vec2 c3 = Chroma(cx.y, cy.y);
+        uint u = BilinearPlane(uvec4(c0.x, c1.x, c2.x, c3.x), uint(cx.z), uint(cy.z));
+        uint v = BilinearPlane(uvec4(c0.y, c1.y, c2.y, c3.y), uint(cx.z), uint(cy.z));
+        rgb = Bt709FixedToRgb(int(y), int(u), int(v));
     }
-    FragColor = vec4(Bt709ToRgb(y, uv.x, uv.y), 255.0) / 255.0;
+    FragColor = vec4(rgb, 255.0) / 255.0;
 }
 #endif
 #endif
