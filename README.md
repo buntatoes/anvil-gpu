@@ -2,7 +2,7 @@
   <h1>anvil-gpu</h1>
   <p>Compositor passes: blurred shadows, gradients, video frame blits, and tile quads, on the CPU or a GPU.</p>
   <p>
-    <img src="https://img.shields.io/badge/release-v.07-e8c37a?style=flat-square" alt="v.07" />
+    <img src="https://img.shields.io/badge/release-v.09-e8c37a?style=flat-square" alt="v.09" />
     <img src="https://img.shields.io/badge/status-Proof_of_Concept-d4a359?style=flat-square" alt="Proof of Concept" />
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MPL--2.0-blue?style=flat-square" alt="MPL-2.0" /></a>
     <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-policy-2ea44f?style=flat-square" alt="Security" /></a>
@@ -10,7 +10,7 @@
   </p>
 </div>
 
-Version 0.9.0. The last release tag is v.07.
+Version 0.9.0. The last tagged release is v.07. There was never a 0.8.0 release.
 
 Drawing for the compositor: blurred box shadows, linear and radial gradients, and video frame blits, plus the older tile quad drawing. The CPU passes are the reference. The same passes are written in GLSL and HLSL, and since 0.9.0 they run on a GPU when one is there and passes a self-test against the CPU. On Linux (tested on a software OpenGL driver only, see below) every test here gets the same bytes from the device as from the CPU. Proof of concept.
 
@@ -58,12 +58,13 @@ If a device call fails (a GL error, a failed `Map`, a removed device), the compo
 - Windows: the Direct3D 11 path is built for `x86_64-pc-windows-gnu` and passes clippy, and the constant buffer layout is checked against `passes.hlsl` by a test that runs everywhere. It has never been run on a Windows machine, so its tests have never executed. Until they have, the self-test is what keeps it from being used if it is wrong.
 - Every GLSL pass and HLSL entry point passes `glslangValidator`.
 
-### Since 0.8.0
+### CPU changes on the way to 0.9.0
 
-The CPU output of two passes changed, so that a device can give the same bytes:
+The shadow, gradient, and blit passes first showed up in a 0.8.0 version that was never released. Before 0.9.0, the CPU output of three of them changed so that a device can give the same bytes. If you built from that 0.8.0 source, this is what moved:
 
-- The shadow mask is blurred in fixed point (multiples of 1/32768) instead of in floating point. Over 3000 random shadows on targets of 1 to 80 pixels a side, 0.039% of all target bytes differ from 0.8.0. (A separate check over 20,000 mixed scenes with a different generator found 0.019%; the share depends mostly on how much of each target the shadows cover.) Alpha and premultiplied color differ by at most one code value. The color of pixels with alpha 2 or less can change more, where a tiny coverage now rounds to zero.
-- Bilinear blits use integer weights in 1/4096 steps, with the sample position rounded to that step, and integer sums. RGBA is mixed row by row in premultiplied color kept in 1/16 steps; YUV planes are mixed to 1/256 of a code value and converted with integer BT.709 coefficients in 1/8192 steps. Over 3000 random bilinear blits (frames up to 40 by 40, scaled to 1 to 120 pixels a side), 0.64% of the written bytes differ from 0.8.0 for RGBA, 0.74% for NV12 and 0.72% for I420, each by one code value at most. Nearest blits did not change.
+- The shadow mask is blurred in fixed point (multiples of 1/32768) instead of in floating point. Over 3000 random shadows on targets of 1 to 80 pixels a side, 0.039% of all target bytes differ from the 0.8.0 source. (A separate check over 20,000 mixed scenes with a different generator found 0.019%; the share depends mostly on how much of each target the shadows cover.) Alpha and premultiplied color differ by at most one code value. The color of pixels with alpha 2 or less can change more, where a tiny coverage now rounds to zero.
+- Bilinear blits use integer weights in 1/4096 steps, with the sample position rounded to that step, and integer sums. RGBA is mixed row by row in premultiplied color kept in 1/16 steps; YUV planes are mixed to 1/256 of a code value and converted with integer BT.709 coefficients in 1/8192 steps. Over 3000 random bilinear blits (frames up to 40 by 40, scaled to 1 to 120 pixels a side), 0.64% of the written bytes differ from the 0.8.0 source for RGBA, 0.74% for NV12 and 0.72% for I420. NV12 and I420 bytes, RGBA alpha, and RGBA color where the output alpha is above 2 differ by one code value at most. The color of RGBA pixels with output alpha 2 or less can change much more, because it is divided back out of such a tiny alpha: in that run 64 such bytes moved, by up to 243. Nearest blits did not change.
+- Shadow paint and gradient colors are rounded as `floor(x + 0.5)`, the way the shaders do it, instead of with Rust's `f32::round`. The two only disagree when the value before rounding is exactly 0.5 - 2^-25, which is rare, and then one channel moves by one code value.
 
 ### The probe and processes
 
@@ -102,7 +103,7 @@ cargo test
 Rust 2024 edition, Rust 1.85.1 or newer. No crates.io dependencies, and nothing to link at build time besides `libdl` on Linux and `kernel32` on Windows.
 
 - `tests/gpu_equality.rs` draws 2020 seeded random cases on the device and on the CPU and compares every byte, row padding included: 400 shadows, 320 gradients with 1 to 16 stops, 360 blits of all formats with both filters, 900 bilinear RGBA, NV12, and I420 blits scaled far down, a little down, and up to eight times up, with 1-pixel frames, edge clamping, and rectangles off every side, and 40 with the geometry of a bilinear case that used to differ. Each case has a 20 second limit.
-- `tests/device_differential.rs` draws seeded scenes of 2 to 8 calls on targets up to 301 by 211 on both sides for 1.5 seconds per test, broken inputs included, and also replays the scene that used to be one code value apart. Set `ANVIL_SEED` to run different scenes and `ANVIL_FIRST_CASE` to replay one.
+- `tests/device_differential.rs` draws seeded scenes of 2 to 8 calls on targets up to 301 by 211 on both sides for 1.5 seconds per test, broken inputs included, and also replays the scenes that used to be one code value apart. Set `ANVIL_SEED` to run different scenes and `ANVIL_FIRST_CASE` to replay one.
 - `tests/robustness.rs` throws seeded random and broken input at the CPU and device paths for 1.5 seconds each and requires the same result from both. Set `ANVIL_ROBUSTNESS_MS` for a longer run.
 - The unit tests in `src/gpu_gl.rs` force each failure (shaders that do not compile, a context that cannot be made, a draw that fails partway) and check that the output still equals the CPU output.
 
