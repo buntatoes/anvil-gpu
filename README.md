@@ -113,7 +113,7 @@ Tests that need a device pass when there is none, so they do not fail on a machi
 
 ## The other repositories
 
-The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) (Apache-2.0). The page engine is `anvil-engine` (proprietary, not MPL-2.0). These nine libraries sit next to both, and all of them are MPL-2.0. None of them come from crates.io.
+The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) (Apache-2.0). The page engine is [anvil-engine](https://github.com/buntatoes/anvil-engine). Its source is public to read and audit, but it's proprietary, not MPL-2.0, and can't be redistributed on its own. These nine libraries sit next to both, and all of them are MPL-2.0. None of them come from crates.io.
 
 | Repository | What it is |
 | --- | --- |
