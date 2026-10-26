@@ -10,9 +10,10 @@
 //! software, so the caller always gets the software result.
 //!
 //! On Linux the device is OpenGL 3.3 core through EGL: the passes in
-//! [`crate::PASSES_GLSL`] run into offscreen textures and are read back.
-//! On other platforms there is no device draw path, so [`Compositor::open`]
-//! draws in software.
+//! [`crate::PASSES_GLSL`] run into offscreen textures and are read back. On
+//! Windows it is Direct3D 11 with [`crate::PASSES_HLSL`], which has not yet
+//! been run on a Windows machine. On other platforms there is no device draw
+//! path, so [`Compositor::open`] draws in software.
 
 use std::sync::OnceLock;
 

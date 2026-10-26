@@ -12,7 +12,7 @@
 
 Version 0.9.0. The last release tag is v.07.
 
-Drawing for the compositor: blurred box shadows, linear and radial gradients, and video frame blits, plus the older tile quad drawing. The CPU passes are the reference. The same passes are written in GLSL and HLSL, and since 0.9.0 they run on a GPU when one is there and gives exactly the same bytes as the CPU. Proof of concept.
+Drawing for the compositor: blurred box shadows, linear and radial gradients, and video frame blits, plus the older tile quad drawing. The CPU passes are the reference. The same passes are written in GLSL and HLSL, and since 0.9.0 they run on a GPU when one is there and passes a self-test against the CPU. On Linux (tested on a software OpenGL driver only, see below) every test here gets the same bytes from the device as from the CPU. Proof of concept.
 
 ## What runs where
 
@@ -37,7 +37,7 @@ The device is used only if all three steps succeed. Otherwise everything is draw
 
 ### Fallback
 
-If a device call fails (a GL error, a failed `Map`, a removed device), the compositor puts back the pixels the call could have touched, drops the device, and draws that call and every later one on the CPU. The result is the same bytes either way. `Compositor::fallbacks` counts how often that happened.
+If a device call fails (a GL error, a failed `Map`, a removed device), the compositor puts back the pixels the call could have touched, drops the device, and draws that call and every later one on the CPU. That call then gets exactly the CPU bytes. `Compositor::fallbacks` counts how often that happened.
 
 ### Limits
 
@@ -46,17 +46,24 @@ If a device call fails (a GL error, a failed `Map`, a removed device), the compo
 - One shadow uses up to four textures at once (two R32F mask textures for the blur, the destination copy, and the output). The device does not stream rows the way the CPU passes do, so its memory grows with the shadow size up to that limit. Textures are freed at the end of each call. The CPU side also keeps a copy of the region for the upload and the read back.
 - One device per process, and all GL work goes through one lock. Calls from several threads are correct but take turns.
 - OpenGL ES only drivers are not used; the passes need desktop OpenGL 3.3 core.
+- Opening a device has a 20 second limit, but a single draw does not. A driver that hangs in the middle of a draw hangs that call, and every other call waits on the GL lock behind it.
 - Every call uploads, draws, and reads back synchronously. This is about being correct on a device first, not about speed. On llvmpipe here, a 1024x768 target with a large blurred shadow, a full-size radial gradient, and a scaled 640x360 blit took about the same time on the device as on the CPU (81 ms against 91 ms, release build). Real hardware has not been measured.
 
 ### What was checked, and how
 
 - Linux: all of it ran on Mesa's llvmpipe, a software OpenGL driver, through EGL 1.5 surfaceless. The device and CPU bytes are equal in every test below. It has not been run on real GPU hardware. A hardware driver that rounds differently should fail the self-test and stay on the CPU. The self-test is one small scene, though, so it cannot prove that a driver matches the CPU everywhere.
+- Which passes are exact by construction, and which only by test:
+  - The shadow blur and the bilinear weights and sums of blits use integer math on both sides, so they cannot round differently on a device that follows the integer rules of GLSL and HLSL and reads 8-bit texels back as whole code values.
+  - The shadow mask and paint, gradients, and the BT.709 conversion of nearest YUV blits use f32 math in the same order as the CPU. A driver may fuse a multiply and an add, which rounds once instead of twice. For the nearest YUV conversion that would move 20 of the 16.7 million possible Y, Cb, Cr triples one green code value; llvmpipe matched the CPU on all 16.7 million in one 4096 by 4096 test frame. The tests here found no difference in these passes on llvmpipe, but that does not prove a hardware driver matches.
 - Windows: the Direct3D 11 path is built for `x86_64-pc-windows-gnu` and passes clippy, and the constant buffer layout is checked against `passes.hlsl` by a test that runs everywhere. It has never been run on a Windows machine, so its tests have never executed. Until they have, the self-test is what keeps it from being used if it is wrong.
 - Every GLSL pass and HLSL entry point passes `glslangValidator`.
 
 ### Since 0.8.0
 
-The shadow mask is now blurred in fixed point (multiples of 1/32768) instead of in floating point, so a device can give the same bytes as the CPU. CPU shadow output changed slightly: in random tests about 0.04% of bytes differ from 0.8.0, alpha and premultiplied color by at most one code value. The color of pixels with alpha 2 or less can change more, where a tiny coverage now rounds to zero.
+The CPU output of two passes changed, so that a device can give the same bytes:
+
+- The shadow mask is blurred in fixed point (multiples of 1/32768) instead of in floating point. Over 3000 random shadows on targets of 1 to 80 pixels a side, 0.039% of all target bytes differ from 0.8.0. (A separate check over 20,000 mixed scenes with a different generator found 0.019%; the share depends mostly on how much of each target the shadows cover.) Alpha and premultiplied color differ by at most one code value. The color of pixels with alpha 2 or less can change more, where a tiny coverage now rounds to zero.
+- Bilinear blits use integer weights in 1/4096 steps, with the sample position rounded to that step, and integer sums. RGBA is mixed row by row in premultiplied color kept in 1/16 steps; YUV planes are mixed to 1/256 of a code value and converted with integer BT.709 coefficients in 1/8192 steps. Over 3000 random bilinear blits (frames up to 40 by 40, scaled to 1 to 120 pixels a side), 0.64% of the written bytes differ from 0.8.0 for RGBA, 0.74% for NV12 and 0.72% for I420, each by one code value at most. Nearest blits did not change.
 
 ### The probe and processes
 
@@ -67,7 +74,7 @@ The probe is cached per process, not per machine. It now also makes a context, c
 - `Compositor` takes a shadow, gradient, or blit, checks it, and draws it, on the device picked above or on the CPU. It can also hold any other `ComposeBackend`. `device_pass_draws` counts pass draws done on a device in this process, which shows whether calls really ran there.
 - `draw_box_shadow` draws the rounded box into a coverage mask, blurs it with three box passes along rows and three along columns (close to a gaussian with sigma `blur / 2`), then paints the color through it. Offset, spread, corner radius, and clip are close to CSS box shadows, but the blur is a three-box approximation of the CSS gaussian, and the corner radius simply grows by the spread. A sharp box keeps sharp corners when it grows. The mask is made and blurred a row at a time, so it is never held whole: at the largest blur on a 16384 pixel wide target the working memory stays under 60 MB.
 - `draw_gradient` fills a rectangle with a linear gradient (start and end point) or an elliptical radial gradient, with 1 to 16 stops.
-- `draw_blit` copies an RGBA, NV12, or I420 frame into a rectangle, with nearest or bilinear sampling. YUV uses limited-range BT.709, the same as `Nv12Surface`. A 1:1 NV12 blit gives the same bytes as `Nv12Surface::to_rgba_bt709`. Bilinear sampling treats chroma as sitting at the center of each 2 by 2 luma block. Most BT.709 video sites chroma on the left edge of the block, so for that video the scaled chroma lands half a luma pixel to the right, which only shows as slight fringes on sharp color edges. The shader passes use the same siting, so the output does not depend on the backend.
+- `draw_blit` copies an RGBA, NV12, or I420 frame into a rectangle, with nearest or bilinear sampling. YUV uses limited-range BT.709, the same as `Nv12Surface`. A 1:1 nearest NV12 blit gives the same bytes as `Nv12Surface::to_rgba_bt709`; bilinear blits use the integer conversion described above, which can be one code value away from it. Bilinear sampling treats chroma as sitting at the center of each 2 by 2 luma block. Most BT.709 video sites chroma on the left edge of the block, so for that video the scaled chroma lands half a luma pixel to the right, which only shows as slight fringes on sharp color edges. The shader passes use the same siting and the same integer math.
 - Targets are straight RGBA8 with a row stride (`RgbaTarget`). Sizes, strides, plane lengths, and values are checked first. Bad input returns `ComposeError` and draws nothing. Each side is capped at 16384 pixels and blur at 256.
 - `GpuDevice::render_quads` counts the 16 by 16 tiles a quad touches, then shades the frame once. The bytes match `render_frame_rgba`.
 - `composite_rgba_frame`, `convert_rgba_on_device`, and `present_nv12_on_device` work as before and run on the CPU.
@@ -80,9 +87,9 @@ The probe is cached per process, not per machine. It now also makes a context, c
 The rest of the crate is built with `#![deny(unsafe_code)]`. Unsafe code is only in these three modules, which only wrap system calls. Each block has a comment saying why it is sound, every returned pointer, handle, length, and status is checked, and no raw pointer leaves the module.
 
 - `src/sys_gl.rs` (Linux): `dlopen` and `dlsym` for `libEGL.so.1`, and for GL entry points that `eglGetProcAddress` does not return, `libOpenGL.so.0` or `libGL.so.1`.
-  - EGL: `eglGetProcAddress`, `eglQueryString`, `eglGetPlatformDisplayEXT`, `eglGetDisplay`, `eglInitialize`, `eglBindAPI`, `eglChooseConfig`, `eglCreateContext`, `eglDestroyContext`, `eglCreatePbufferSurface`, `eglDestroySurface`, `eglMakeCurrent`, `eglGetCurrentContext`, `eglGetCurrentDisplay`, `eglGetCurrentSurface`.
+  - EGL: `eglGetProcAddress`, `eglQueryString`, `eglGetPlatformDisplayEXT`, `eglGetDisplay`, `eglInitialize`, `eglBindAPI`, `eglQueryAPI`, `eglChooseConfig`, `eglCreateContext`, `eglDestroyContext`, `eglCreatePbufferSurface`, `eglDestroySurface`, `eglMakeCurrent`, `eglGetCurrentContext`, `eglGetCurrentDisplay`, `eglGetCurrentSurface`.
   - OpenGL (42): `glGetError`, `glGetIntegerv`, `glPixelStorei`, `glViewport`, `glCreateShader`, `glShaderSource`, `glCompileShader`, `glGetShaderiv`, `glGetShaderInfoLog`, `glDeleteShader`, `glCreateProgram`, `glAttachShader`, `glLinkProgram`, `glGetProgramiv`, `glGetProgramInfoLog`, `glDeleteProgram`, `glUseProgram`, `glGetUniformLocation`, `glUniform1i`, `glUniform2i`, `glUniform4i`, `glUniform1f`, `glUniform2f`, `glUniform4f`, `glUniform1fv`, `glUniform4fv`, `glGenTextures`, `glDeleteTextures`, `glBindTexture`, `glActiveTexture`, `glTexParameteri`, `glTexImage2D`, `glGenFramebuffers`, `glDeleteFramebuffers`, `glBindFramebuffer`, `glFramebufferTexture2D`, `glCheckFramebufferStatus`, `glGenVertexArrays`, `glDeleteVertexArrays`, `glBindVertexArray`, `glDrawArrays`, `glReadPixels`.
-  - The context is only current while the GL lock is held, and whatever was current before is made current again afterwards.
+  - The context is only current while the GL lock is held, and whatever was current before is made current again afterwards, along with the thread's EGL rendering API, so a caller using OpenGL ES on the same thread keeps it.
 - `src/sys_d3d.rs` (Windows): `LoadLibraryA` and `GetProcAddress` for `D3D11CreateDevice`, then methods called through their vtable slots: `ID3D11Device` `CreateBuffer`, `CreateTexture2D`, `CreateShaderResourceView`, `CreateRenderTargetView`, `CreateVertexShader`, `CreatePixelShader`, `CreateRasterizerState`, `GetDeviceRemovedReason`; `ID3D11DeviceContext` `VSSetConstantBuffers`, `PSSetShaderResources`, `PSSetShader`, `VSSetShader`, `Draw`, `Map`, `Unmap`, `PSSetConstantBuffers`, `IASetPrimitiveTopology`, `OMSetRenderTargets`, `RSSetState`, `RSSetViewports`, `CopyResource`, `UpdateSubresource`; and `IUnknown::Release`, once per object.
 - `src/sys.rs` (Windows): `LoadLibraryA` and `GetProcAddress` for `D3DCompile` and `D3D11CreateDevice`, the calls themselves, reading and releasing the compiler blobs, and releasing the probe device and context.
 
@@ -94,11 +101,12 @@ cargo test
 
 Rust 2024, builds with Rust 1.85. No crates.io dependencies, and nothing to link at build time besides `libdl` on Linux and `kernel32` on Windows.
 
-- `tests/gpu_equality.rs` draws 1080 seeded random shadows, gradients, and blits (odd sizes, padded strides, 1 to 16 stops, all frame formats, both filters) on the device and on the CPU and compares every byte, row padding included. Each case has a 20 second limit.
+- `tests/gpu_equality.rs` draws 2020 seeded random cases on the device and on the CPU and compares every byte, row padding included: 400 shadows, 320 gradients with 1 to 16 stops, 360 blits of all formats with both filters, 900 bilinear RGBA, NV12, and I420 blits scaled far down, a little down, and up to eight times up, with 1-pixel frames, edge clamping, and rectangles off every side, and 40 with the geometry of a bilinear case that used to differ. Each case has a 20 second limit.
+- `tests/device_differential.rs` draws seeded scenes of 2 to 8 calls on targets up to 301 by 211 on both sides for 1.5 seconds per test, broken inputs included, and also replays the scene that used to be one code value apart. Set `ANVIL_SEED` to run different scenes and `ANVIL_FIRST_CASE` to replay one.
 - `tests/robustness.rs` throws seeded random and broken input at the CPU and device paths for 1.5 seconds each and requires the same result from both. Set `ANVIL_ROBUSTNESS_MS` for a longer run.
 - The unit tests in `src/gpu_gl.rs` force each failure (shaders that do not compile, a context that cannot be made, a draw that fails partway) and check that the output still equals the CPU output.
 
-Tests that need a device print `skipped: no usable device here (...)` and pass when there is none, so they do not fail on a machine without OpenGL. On Linux without a GPU, Mesa's llvmpipe is enough to run them.
+Tests that need a device pass when there is none, so they do not fail on a machine without OpenGL. The equality and scene tests then write a `SKIPPED` line that shows in a normal `cargo test` run; set `ANVIL_REQUIRE_DEVICE=1` to make a missing device fail them instead. On Linux without a GPU, Mesa's llvmpipe is enough to run them.
 
 ## The other repositories
 
