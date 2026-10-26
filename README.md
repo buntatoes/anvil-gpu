@@ -99,7 +99,7 @@ The rest of the crate is built with `#![deny(unsafe_code)]`. Unsafe code is only
 cargo test
 ```
 
-Rust 2024, builds with Rust 1.85. No crates.io dependencies, and nothing to link at build time besides `libdl` on Linux and `kernel32` on Windows.
+Rust 2024 edition, Rust 1.85.1 or newer. No crates.io dependencies, and nothing to link at build time besides `libdl` on Linux and `kernel32` on Windows.
 
 - `tests/gpu_equality.rs` draws 2020 seeded random cases on the device and on the CPU and compares every byte, row padding included: 400 shadows, 320 gradients with 1 to 16 stops, 360 blits of all formats with both filters, 900 bilinear RGBA, NV12, and I420 blits scaled far down, a little down, and up to eight times up, with 1-pixel frames, edge clamping, and rectangles off every side, and 40 with the geometry of a bilinear case that used to differ. Each case has a 20 second limit.
 - `tests/device_differential.rs` draws seeded scenes of 2 to 8 calls on targets up to 301 by 211 on both sides for 1.5 seconds per test, broken inputs included, and also replays the scene that used to be one code value apart. Set `ANVIL_SEED` to run different scenes and `ANVIL_FIRST_CASE` to replay one.
@@ -110,16 +110,18 @@ Tests that need a device pass when there is none, so they do not fail on a machi
 
 ## The other repositories
 
-The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) (Apache-2.0). The page engine is `anvil-engine` (proprietary, not MPL-2.0). These libraries sit next to both. None of them come from crates.io.
+The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) (Apache-2.0). The page engine is `anvil-engine` (proprietary, not MPL-2.0). These nine libraries sit next to both, and all of them are MPL-2.0. None of them come from crates.io.
 
 | Repository | What it is |
 | --- | --- |
 | [anvil-cipher](https://github.com/buntatoes/anvil-cipher) | AES-128, AES-256, CTR, AES-256-GCM |
 | [anvil-compress](https://github.com/buntatoes/anvil-compress) | DEFLATE, zlib, gzip |
+| [anvil-hpack](https://github.com/buntatoes/anvil-hpack) | HPACK header compression for HTTP/2 |
 | [anvil-image](https://github.com/buntatoes/anvil-image) | PNG, JPEG, GIF, WebP, ICO, BMP, PPM |
 | [anvil-json](https://github.com/buntatoes/anvil-json) | JSON |
+| [anvil-pqc](https://github.com/buntatoes/anvil-pqc) | ML-KEM-768, X25519, X25519MLKEM768, SHA-3 (not used by the browser yet) |
 | [anvil-ttf](https://github.com/buntatoes/anvil-ttf) | TrueType and OpenType (`glyf`, `CFF `, `kern`, `GPOS`) |
-| [anvil-gpu](https://github.com/buntatoes/anvil-gpu) | Drawing of boxes, shadows, gradients, and NV12, on the CPU or a GPU |
+| [anvil-gpu](https://github.com/buntatoes/anvil-gpu) | Compositor passes for boxes, shadows, gradients, and NV12, on the CPU or a GPU |
 | [anvil-video](https://github.com/buntatoes/anvil-video) | CPU frames and PCM/ADPCM audio in a small MP4 container |
 
 ## License
