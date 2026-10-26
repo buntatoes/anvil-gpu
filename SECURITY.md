@@ -12,10 +12,12 @@ Do not put the details in a public issue.
 
 ## What this is
 
-Drawing runs on the CPU. `Compositor` draws shadows, gradients, and frame blits, and `GpuDevice` shades quads in 16 by 16 tiles. Every size, stride, plane length, and value is checked before anything is drawn. On Linux the crate loads `libEGL.so.1` and calls `eglInitialize` once per process, without opening a context. On Windows it compiles `shaders/compositor.hlsl` and `shaders/passes.hlsl` with `d3dcompiler_47.dll` and checks whether a Direct3D 11 device opens. Nothing is drawn on a GPU.
+Drawing runs on the CPU, or on a GPU when one passes the self-test. `Compositor` draws shadows, gradients, and frame blits, and `GpuDevice` shades quads in 16 by 16 tiles on the CPU. Every size, stride, plane length, and value is checked before anything is drawn, on either path.
 
-All unsafe code is in `src/sys.rs`, which holds those system calls and nothing else.
+On Linux the crate loads `libEGL.so.1` and the OpenGL entry points with `dlopen`, makes an offscreen OpenGL 3.3 core context, and runs the passes in `shaders/passes.glsl`. On Windows it loads `d3d11.dll` and `d3dcompiler_47.dll`, makes a Direct3D 11 device, and runs `shaders/passes.hlsl`; that path has not yet been run on a Windows machine. Pixels go to the device as textures and come back with `glReadPixels` or a staging texture copy. No pixel data stays on the device after a call; only the compiled passes do.
 
-There is no mapped GPU memory and no video decoder in this crate.
+All unsafe code is in `src/sys.rs`, `src/sys_gl.rs`, and `src/sys_d3d.rs`, which hold those system calls and nothing else.
 
-Version 0.8.0 is current.
+There is no persistently mapped GPU memory and no video decoder in this crate.
+
+Version 0.9.0 is current.

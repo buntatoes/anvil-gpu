@@ -1,17 +1,17 @@
 # CPU compositor passes: blurred box shadows, linear and radial gradients,
 # RGBA/NV12/I420 frame blits, rounded-box tile quads, an RGBA shelf atlas, and
 # RGBA <-> NV12 conversion. shaders/passes.* and shaders/compositor.* are
-# included as source strings; on Windows the HLSL is compiled with
-# d3dcompiler_47.dll, and nothing runs on a GPU yet.
+# included as source strings. The passes run through OpenGL 3.3 on Linux and
+# Direct3D 11 on Windows (not yet run there) when a self-test matches the CPU.
 # Callers: anvil-raster (SDF and gradients, in anvil-engine) and anvil-video (NV12 planes).
 
 [package]
 name = "anvil-gpu"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 authors = ["Buntato <324143321+buntatoes@users.noreply.github.com>"]
 license = "MPL-2.0"
-description = "CPU compositor passes for shadows, gradients, and video frames, with GLSL and HLSL versions. Probes EGL and Direct3D 11."
+description = "Compositor passes for shadows, gradients, and video frames, on the CPU or through OpenGL and Direct3D 11 when the device matches the CPU bytes."
 repository = "https://github.com/buntatoes/anvil-gpu"
 homepage = "https://github.com/buntatoes/anvil-gpu"
 readme = "README.md"
