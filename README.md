@@ -100,7 +100,7 @@ The rest of the crate is built with `#![deny(unsafe_code)]`. Unsafe code is only
 cargo test
 ```
 
-Rust 2024 edition, Rust 1.85.1 or newer. No crates.io dependencies, and nothing to link at build time besides `libdl` on Linux and `kernel32` on Windows.
+Rust 2024 edition, Rust 1.99.1 or newer. No crates.io dependencies, and nothing to link at build time besides `libdl` on Linux and `kernel32` on Windows.
 
 - `tests/gpu_equality.rs` draws 2020 seeded random cases on the device and on the CPU and compares every byte, row padding included: 400 shadows, 320 gradients with 1 to 16 stops, 360 blits of all formats with both filters, 900 bilinear RGBA, NV12, and I420 blits scaled far down, a little down, and up to eight times up, with 1-pixel frames, edge clamping, and rectangles off every side, and 40 with the geometry of a bilinear case that used to differ. Each case has a 20 second limit.
 - `tests/device_differential.rs` draws seeded scenes of 2 to 8 calls on targets up to 301 by 211 on both sides for 1.5 seconds per test, broken inputs included, and also replays the scenes that used to be one code value apart. Set `ANVIL_SEED` to run different scenes and `ANVIL_FIRST_CASE` to replay one.

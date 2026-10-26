@@ -9,6 +9,7 @@
 name = "anvil-gpu"
 version = "0.9.0"
 edition = "2024"
+rust-version = "1.99.1"
 authors = ["Buntato <324143321+buntatoes@users.noreply.github.com>"]
 license = "MPL-2.0"
 description = "Compositor passes for shadows, gradients, and video frames, on the CPU or through OpenGL and Direct3D 11 when the device matches the CPU bytes."
