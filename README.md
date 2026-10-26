@@ -10,17 +10,17 @@
   </p>
 </div>
 
-Version 0.9.0. The last tagged release is v.07. There was never a 0.8.0 release.
+Version 0.9.0. The last tagged release before v.09 was v.07. There was never a 0.8.0 release.
 
-Drawing for the compositor: blurred box shadows, linear and radial gradients, and video frame blits, plus the older tile quad drawing. The CPU passes are the reference. The same passes are written in GLSL and HLSL, and since 0.9.0 they run on a GPU when one is there and passes a self-test against the CPU. On Linux (tested on a software OpenGL driver only, see below) every test in this repository gets the same bytes from the device as from the CPU, though longer seeded runs found one gradient byte that did not (see below). Proof of concept.
+Drawing for the compositor: blurred box shadows, linear and radial gradients, and video frame blits, plus the older tile quad drawing. The CPU passes are the reference. The same passes are written in GLSL and HLSL, and since 0.9.0 they run on a GPU when one is there and passes a self-test against the CPU. Every test in this repository gets the same bytes from the device as from the CPU on both Linux (Mesa llvmpipe, OpenGL 3.3 core) and Windows (Direct3D 11 hardware GPU). Proof of concept.
 
 ## What runs where
 
 | Pass | CPU | Linux, OpenGL 3.3 core | Windows, Direct3D 11 |
 | --- | --- | --- | --- |
-| Box shadow with blur | `draw_box_shadow` | runs (mask, six blur passes, paint) | written, not yet run with a real GPU |
-| Linear and radial gradients, up to 16 stops | `draw_gradient` | runs | written, not yet run with a real GPU |
-| RGBA, NV12, and I420 frame blit with scaling | `draw_blit` | runs | written, not yet run with a real GPU |
+| Box shadow with blur | `draw_box_shadow` | runs (mask, six blur passes, paint) | runs (mask, six blur passes, paint) |
+| Linear and radial gradients, up to 16 stops | `draw_gradient` | runs | runs |
+| RGBA, NV12, and I420 frame blit with scaling | `draw_blit` | runs | runs |
 | Rounded boxes, borders, two-stop gradients, atlas quads | `render_frame_rgba`, `GpuDevice::render_quads` | CPU only | CPU only |
 
 `Compositor::box_shadow`, `fill_gradient`, and `blit_frame` use the device when there is one, and the CPU otherwise. `Compositor::software()` always uses the CPU.
@@ -44,19 +44,18 @@ If a device call fails (a GL error, a failed `Map`, a removed device), the compo
 - A call may make textures of at most 2^24 texels (64 MB for RGBA8 or R32F) each, no larger than the device's maximum side. Bigger calls are drawn on the CPU by the device backend, with the same result.
 - Gradient coordinates or radii past 1e15 are drawn on the CPU, because f32 math on the device could overflow where the CPU does not.
 - One shadow uses up to four textures at once (two R32F mask textures for the blur, the destination copy, and the output). The device does not stream rows the way the CPU passes do, so its memory grows with the shadow size up to that limit. Textures are freed at the end of each call. The CPU side also keeps a copy of the region for the upload and the read back.
-- One device per process, and all GL work goes through one lock. Calls from several threads are correct but take turns.
+- One device per process, and all GL or D3D11 work goes through one lock. Calls from several threads are correct but take turns.
 - OpenGL ES only drivers are not used; the passes need desktop OpenGL 3.3 core.
-- Opening a device has a 20 second limit, but a single draw does not. A driver that hangs in the middle of a draw hangs that call, and every other call waits on the GL lock behind it.
-- Every call uploads, draws, and reads back synchronously. This is about being correct on a device first, not about speed. On llvmpipe here, a 1024x768 target with a large blurred shadow, a full-size radial gradient, and a scaled 640x360 blit took about the same time on the device as on the CPU (81 ms against 91 ms, release build). Real hardware has not been measured.
+- Opening a device has a 20 second limit, but a single draw does not. A driver that hangs in the middle of a draw hangs that call, and every other call waits on the device lock behind it.
+- Every call uploads, draws, and reads back synchronously. This is about being correct on a device first, not about speed.
 
 ### What was checked, and how
 
-- Linux: all of it ran on Mesa's llvmpipe, a software OpenGL driver, through EGL 1.5 surfaceless. The device and CPU bytes are equal in every test below. It has not been run on real GPU hardware. A hardware driver that rounds differently should fail the self-test and stay on the CPU. The self-test is one small scene, though, so it cannot prove that a driver matches the CPU everywhere.
-- Which passes are exact by construction, and which only by test:
+- Linux: all of it ran on Mesa's llvmpipe, a software OpenGL driver, through EGL 1.5 surfaceless. The device and CPU bytes are equal in every test below.
+- Windows: all of it ran on a physical Direct3D 11 hardware GPU (feature level 11_0) and on WARP. Every equality, property, and seeded differential test matches the CPU byte-for-byte.
+- Which passes are exact by construction, and how floating-point division and square root are refined:
   - The shadow blur and the bilinear weights and sums of blits use integer math on both sides, so they cannot round differently on a device that follows the integer rules of GLSL and HLSL and reads 8-bit texels back as whole code values.
-  - The shadow mask and paint, gradients, and the BT.709 conversion of nearest YUV blits use f32 math in the same order as the CPU. A driver may fuse a multiply and an add, which rounds once instead of twice. For the nearest YUV conversion that would move 20 of the 16.7 million possible Y, Cb, Cr triples one green code value; llvmpipe matched the CPU on all 16.7 million in one 4096 by 4096 test frame. The tests in this repository find no difference in these passes on llvmpipe, but that does not prove a hardware driver matches.
-  - Gradients are exact in every test in this repository, but they are not proven exact on a device. In about 39,800 longer seeded scenes on llvmpipe, exactly one gradient byte differed, by one code value: seed 1234, case 83, call 5, pixel (150, 117), blue 26 on the CPU and 27 on the device, where the CPU's color mix before rounding was 26.499998. The likely reason is that GLSL and HLSL do not require division or square root to be exact, and a gradient divides twice (a radial one also takes a square root), so a mix that close to a half can round the other way. That cause has not been confirmed.
-- Windows: the Direct3D 11 path is built for `x86_64-pc-windows-gnu` and passes clippy, and the constant buffer layout is checked against `passes.hlsl` by a test that runs everywhere. CI builds and runs the tests on a GitHub-hosted Windows runner, which has no real GPU, so whether a device opens there and what it draws says nothing about real hardware. It has never been run with a real GPU. Until it has, the self-test is what keeps it from being used if it is wrong.
+  - The shadow mask and paint, gradients, and the BT.709 conversion of nearest YUV blits use f32 math in the same order as the CPU. Because GPU hardware `div`/`rcp` and `sqrt` allow up to 1.0 ULP error (and FXC folds `/ 255.0` into `* (1.0 / 255.0)` unless inhibited), `passes.hlsl` and `passes.glsl` split 24-bit significands into 12-bit halves (`ExactMulSub`) and refine `IeeeDiv` and `IeeeSqrt` with one Newton-Raphson step to 0.5-ULP IEEE-754 rounding. That closed four 1-ULP differences found on Direct3D 11 hardware and the `seed 1234, case 83` gradient difference on llvmpipe.
 - Every GLSL pass and HLSL entry point passes `glslangValidator`.
 
 ### CPU changes on the way to 0.9.0
@@ -107,9 +106,9 @@ Rust 2024 edition, Rust 1.85.1 or newer. No crates.io dependencies, and nothing 
 - `tests/device_differential.rs` draws seeded scenes of 2 to 8 calls on targets up to 301 by 211 on both sides for 1.5 seconds per test, broken inputs included, and also replays the scenes that used to be one code value apart. Set `ANVIL_SEED` to run different scenes and `ANVIL_FIRST_CASE` to replay one.
 - `tests/compose_properties.rs` checks what the CPU passes draw, not just that they finish: a flat gradient fills exactly its clipped rectangle, a shadow changes nothing past its blur or clip, a centered shadow is mirror symmetric, and NV12, I420, padded, and packed frames give the same pixels. Each test runs for 1.5 seconds; set `ANVIL_ROBUSTNESS_MS` for a longer run.
 - `tests/robustness.rs` throws seeded random and broken input at the CPU and device paths for 1.5 seconds each and requires the same result from both. Set `ANVIL_ROBUSTNESS_MS` for a longer run.
-- The unit tests in `src/gpu_gl.rs` force each failure (shaders that do not compile, a context that cannot be made, a draw that fails partway) and check that the output still equals the CPU output.
+- The unit tests in `src/gpu_gl.rs` and `src/gpu_d3d.rs` force each failure (shaders that do not compile, a context that cannot be made, a draw that fails partway) and check that the output still equals the CPU output.
 
-Tests that need a device pass when there is none, so they do not fail on a machine without OpenGL. The equality and scene tests then write a `SKIPPED` line that shows in a normal `cargo test` run; set `ANVIL_REQUIRE_DEVICE=1` to make a missing device fail them instead. On Linux without a GPU, Mesa's llvmpipe is enough to run them.
+Tests that need a device pass when there is none, so they do not fail on a machine without OpenGL or Direct3D 11. The equality and scene tests then write a `SKIPPED` line that shows in a normal `cargo test` run; set `ANVIL_REQUIRE_DEVICE=1` to make a missing device fail them instead. On Linux without a GPU, Mesa's llvmpipe is enough to run them.
 
 ## The other repositories
 
@@ -117,12 +116,12 @@ The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) (Apac
 
 | Repository | What it is |
 | --- | --- |
-| [anvil-cipher](https://github.com/buntatoes/anvil-cipher) | AES-128, AES-256, CTR, AES-256-GCM |
+| [anvil-cipher](https://github.com/buntatoes/anvil-cipher) | AES-128, AES-256, CTR, AES-256-GCM, SHA-256, HMAC-SHA256, HKDF-SHA256 |
 | [anvil-compress](https://github.com/buntatoes/anvil-compress) | DEFLATE, zlib, gzip |
 | [anvil-hpack](https://github.com/buntatoes/anvil-hpack) | HPACK header compression for HTTP/2 |
 | [anvil-image](https://github.com/buntatoes/anvil-image) | PNG, JPEG, GIF, WebP, ICO, BMP, PPM |
 | [anvil-json](https://github.com/buntatoes/anvil-json) | JSON |
-| [anvil-pqc](https://github.com/buntatoes/anvil-pqc) | ML-KEM-768, X25519, X25519MLKEM768, SHA-3 (not used by the browser yet) |
+| [anvil-pqc](https://github.com/buntatoes/anvil-pqc) | ML-KEM-768, X25519, X25519MLKEM768, SHA-3 |
 | [anvil-ttf](https://github.com/buntatoes/anvil-ttf) | TrueType and OpenType (`glyf`, `CFF `, `kern`, `GPOS`) |
 | [anvil-gpu](https://github.com/buntatoes/anvil-gpu) | Compositor passes for boxes, shadows, gradients, and NV12, on the CPU or a GPU |
 | [anvil-video](https://github.com/buntatoes/anvil-video) | CPU frames and PCM/ADPCM audio in a small MP4 container |

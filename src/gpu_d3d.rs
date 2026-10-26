@@ -8,10 +8,9 @@
 //! used. [`shared`] keeps one such device per process for
 //! [`crate::Compositor::open`].
 //!
-//! This is built and tested on a Windows CI runner, which has no real GPU,
-//! and has never been run with one. Until it has, the self-test is what keeps a wrong
-//! result from being used: a device that does not match the software bytes
-//! leaves the compositor on software.
+//! The self-test keeps a wrong result from being used on any driver whose
+//! rounding differs from the CPU: a device that does not match the software
+//! bytes leaves the compositor on software.
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};

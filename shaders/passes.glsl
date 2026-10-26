@@ -71,26 +71,77 @@ vec2 TargetCenter()
     return vec2(RegionPixel() + uOrigin) + 0.5;
 }
 
+// Splitting `x` and `y` into 12-bit halves gives the exact residual `a - x * y`
+// in 24-bit floats, and one refinement step rounds `a / b` and `sqrt(x)` to
+// 0.5 ULP as on the CPU.
+float ExactMulSub(float a, float x, float y)
+{
+    float xh = uintBitsToFloat(floatBitsToUint(x) & 0xfffff000u);
+    float xl = x - xh;
+    float yh = uintBitsToFloat(floatBitsToUint(y) & 0xfffff000u);
+    float yl = y - yh;
+    float p1 = xh * yh;
+    float p2 = xh * yl + xl * yh;
+    float p3 = xl * yl;
+    return ((a - p1) - p2) - p3;
+}
+
+float IeeeDiv(float a, float b)
+{
+    if (a == 0.0)
+    {
+        return 0.0;
+    }
+    float q0 = a / b;
+    float rem = ExactMulSub(a, q0, b);
+    return q0 + rem / b;
+}
+
+vec2 IeeeDiv2(vec2 a, vec2 b)
+{
+    return vec2(IeeeDiv(a.x, b.x), IeeeDiv(a.y, b.y));
+}
+
+vec3 IeeeDiv3(vec3 a, float b)
+{
+    return vec3(IeeeDiv(a.x, b), IeeeDiv(a.y, b), IeeeDiv(a.z, b));
+}
+
+float IeeeSqrt(float x)
+{
+    if (x <= 0.0)
+    {
+        return 0.0;
+    }
+    float s0 = sqrt(x);
+    float rem = ExactMulSub(x, s0, s0);
+    return s0 + rem / (2.0 * s0);
+}
+
 // Same as sdf_rounded_box in src/lib.rs.
 float SdfRoundedBox(vec2 p, vec2 halfSize, float radius)
 {
     float r = max(min(radius, min(halfSize.x, halfSize.y)), 0.0);
     vec2 q = abs(p) - (halfSize - vec2(r));
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+    vec2 qm = max(q, 0.0);
+    float outside = IeeeSqrt(qm.x * qm.x + qm.y * qm.y);
+    float inside = min(max(q.x, q.y), 0.0);
+    return (outside + inside) - r;
 }
 
 // Same as over_straight in src/compose.rs. dst and src are 0..255.
 vec4 OverStraight(vec4 dst, vec4 src, float coverage)
 {
-    float sa = (src.a / 255.0) * clamp(coverage, 0.0, 1.0);
+    float sa = IeeeDiv(src.a, 255.0) * clamp(coverage, 0.0, 1.0);
     if (sa <= 0.0)
     {
         return dst;
     }
-    float da = dst.a / 255.0;
+    float da = IeeeDiv(dst.a, 255.0);
     float keep = da * (1.0 - sa);
     float oa = sa + keep;
-    vec3 rgb = clamp(floor((src.rgb * sa + dst.rgb * keep) / oa + 0.5), 0.0, 255.0);
+    vec3 num = src.rgb * sa + dst.rgb * keep;
+    vec3 rgb = clamp(floor(IeeeDiv3(num, oa) + 0.5), 0.0, 255.0);
     return vec4(rgb, clamp(floor(oa * 255.0 + 0.5), 0.0, 255.0));
 }
 
@@ -100,7 +151,7 @@ vec3 Bt709ToRgb(float y, float u, float v)
     float yf = max(y - 16.0, 0.0) * 1.164384;
     float uf = u - 128.0;
     float vf = v - 128.0;
-    vec3 rgb = vec3(yf + 1.792741 * vf, yf - 0.213249 * uf - 0.532909 * vf, yf + 2.112402 * uf);
+    vec3 rgb = vec3(yf + 1.792741 * vf, (yf - 0.213249 * uf) - 0.532909 * vf, yf + 2.112402 * uf);
     return clamp(floor(rgb + 0.5), 0.0, 255.0);
 }
 
@@ -199,8 +250,9 @@ vec4 SampleStops(float t)
         }
         if (c <= uStopOffsets[i])
         {
-            float span = max(uStopOffsets[i] - uStopOffsets[i - 1], 1e-5);
-            float local = clamp((c - uStopOffsets[i - 1]) / span, 0.0, 1.0);
+            float prevOff = uStopOffsets[i - 1];
+            float span = max(uStopOffsets[i] - prevOff, 1e-5);
+            float local = clamp(IeeeDiv(c - prevOff, span), 0.0, 1.0);
             return floor(uStopColors[i - 1] * (1.0 - local) + uStopColors[i] * local + 0.5);
         }
     }
@@ -216,14 +268,16 @@ void main()
     {
         // Same as linear_gradient_t in src/compose.rs.
         vec2 d = uGeometry.zw - uGeometry.xy;
-        float len2 = dot(d, d);
-        t = len2 < 1e-12 ? 1.0 : clamp(dot(c - uGeometry.xy, d) / len2, 0.0, 1.0);
+        float len2 = d.x * d.x + d.y * d.y;
+        vec2 rel = c - uGeometry.xy;
+        float proj = rel.x * d.x + rel.y * d.y;
+        t = len2 < 1e-12 ? 1.0 : clamp(IeeeDiv(proj, len2), 0.0, 1.0);
     }
     else
     {
         // Same as sample_radial_gradient in src/lib.rs.
-        vec2 n = (c - uGeometry.xy) / max(uGeometry.zw, vec2(0.5));
-        t = clamp(length(n), 0.0, 1.0);
+        vec2 n = IeeeDiv2(c - uGeometry.xy, max(uGeometry.zw, vec2(0.5)));
+        t = clamp(IeeeSqrt(n.x * n.x + n.y * n.y), 0.0, 1.0);
     }
     vec4 dst = floor(texelFetch(uDest, p, 0) * 255.0 + 0.5);
     FragColor = OverStraight(dst, SampleStops(t), 1.0) / 255.0;

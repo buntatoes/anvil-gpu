@@ -6,17 +6,18 @@
 //!   RGBA, NV12, and I420 frame blits. It tries a device backend first and
 //!   falls back to [`SoftwareBackend`] on any device error. [`probe_hardware`]
 //!   and [`select_backend`] decide whether a device is used. On Linux the
-//!   device is OpenGL 3.3 core through EGL, and on Windows Direct3D 11 (not
-//!   yet run with a real GPU). Either is used only when its self-test
-//!   scene matches the CPU bytes exactly; elsewhere everything is drawn on
-//!   the CPU.
+//!   device is OpenGL 3.3 core through EGL, and on Windows Direct3D 11. Either
+//!   is used only when its self-test scene matches the CPU bytes exactly;
+//!   elsewhere everything is drawn on the CPU.
+
 //! - [`render_frame_rgba`] rasterizes [`GpuQuad`] values into a straight RGBA8 framebuffer.
 //! - [`sdf_rounded_box`], [`sdf_box_shadow_alpha`], and [`sample_linear_gradient`] are the signed-distance, shadow, and gradient helpers.
 //! - [`TextureAtlas`] shelf-packs straight RGBA8 images and samples them.
 //! - [`bt709_rgba_to_yuv`], [`bt709_yuv_to_rgba`], and [`Nv12Surface`] convert between straight RGBA8 and limited-range BT.709 NV12.
 //!
-//! `anvil-raster` calls the CPU SDF helpers for shadows, rounded boxes, and gradients.
-//! `anvil-video` uses [`Nv12Surface`] for CPU color conversion.
+//! `anvil-raster` calls [`Compositor`] for box shadows and gradients and [`GpuDevice`] for rounded-box quads.
+//! `anvil-video` calls [`Compositor`] for scaled frame blits and [`Nv12Surface`] for CPU color conversion.
+
 //!
 //! [`COMPOSITOR_HLSL`], [`COMPOSITOR_GLSL`], [`PASSES_HLSL`], and [`PASSES_GLSL`] are `include_str!` source strings.
 //! [`GpuDevice`] shades quads in 16 by 16 tiles and probes `libEGL.so.1` on Linux.
@@ -82,8 +83,8 @@ pub const PASSES_GLSL: &str = include_str!("../shaders/passes.glsl");
 /// passes as [`PASSES_GLSL`].
 ///
 /// On Windows, [`probe_hardware`] compiles every entry in [`PASS_ENTRY_POINTS`]
-/// to `DXBC`, and the Direct3D 11 device backend runs them. That backend has
-/// not been run with a real GPU yet.
+/// to `DXBC`, and the Direct3D 11 device backend runs them.
+
 pub const PASSES_HLSL: &str = include_str!("../shaders/passes.hlsl");
 
 /// Entry points and profiles in [`PASSES_HLSL`].

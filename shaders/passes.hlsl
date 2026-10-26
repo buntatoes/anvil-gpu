@@ -6,8 +6,7 @@
 // shaders/passes.glsl line for line. On Windows, src/gpu_d3d.rs compiles every
 // entry point below to DXBC with d3dcompiler_47.dll (see PASS_ENTRY_POINTS in
 // src/lib.rs), runs them on a Direct3D 11 device, and uses the device only if
-// a self-test scene matches the software bytes. That path has been built and
-// type-checked but not yet run with a real GPU.
+// a self-test scene matches the software bytes.
 //
 // Entry points:
 // - VSPass: unit quad over the pass region.
@@ -71,45 +70,102 @@ float4 VSPass(uint id : SV_VertexID) : SV_Position
     return float4(ndc, 0.0, 1.0);
 }
 
-float2 TargetCenter(int2 p)
+// Direct3D 11 guarantees 0.5-ULP IEEE-754 addition and multiplication when
+// marked `precise`, while hardware `div` and `sqrt` have a 1.0-ULP tolerance
+// and FXC folds `/ 255.0` into `* (1.0 / 255.0)`. Splitting `x` and `y` into
+// 12-bit halves gives the exact residual `a - x * y` in 24-bit floats, and one
+// refinement step rounds `a / b` and `sqrt(x)` to 0.5 ULP as on the CPU.
+precise float ExactMulSub(precise float a, precise float x, precise float y)
+{
+    precise float xh = asfloat(asuint(x) & 0xfffff000u);
+    precise float xl = x - xh;
+    precise float yh = asfloat(asuint(y) & 0xfffff000u);
+    precise float yl = y - yh;
+    precise float p1 = xh * yh;
+    precise float p2 = xh * yl + xl * yh;
+    precise float p3 = xl * yl;
+    return ((a - p1) - p2) - p3;
+}
+
+precise float IeeeDiv(precise float a, precise float b)
+{
+    if (a == 0.0)
+    {
+        return 0.0;
+    }
+    precise float q0 = a / b;
+    precise float rem = ExactMulSub(a, q0, b);
+    return q0 + rem / b;
+}
+
+precise float2 IeeeDiv2(precise float2 a, precise float2 b)
+{
+    return float2(IeeeDiv(a.x, b.x), IeeeDiv(a.y, b.y));
+}
+
+precise float3 IeeeDiv3(precise float3 a, precise float b)
+{
+    return float3(IeeeDiv(a.x, b), IeeeDiv(a.y, b), IeeeDiv(a.z, b));
+}
+
+precise float IeeeSqrt(precise float x)
+{
+    if (x <= 0.0)
+    {
+        return 0.0;
+    }
+    precise float s0 = sqrt(x);
+    precise float rem = ExactMulSub(x, s0, s0);
+    return s0 + rem / (2.0 * s0);
+}
+
+precise float2 TargetCenter(int2 p)
 {
     return float2(p + Origin) + 0.5;
 }
 
 // Same as sdf_rounded_box in src/lib.rs.
-float SdfRoundedBox(float2 p, float2 halfSize, float radius)
+precise float SdfRoundedBox(precise float2 p, precise float2 halfSize, precise float radius)
 {
-    float r = max(min(radius, min(halfSize.x, halfSize.y)), 0.0);
-    float2 q = abs(p) - (halfSize - float2(r, r));
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+    precise float r = max(min(radius, min(halfSize.x, halfSize.y)), 0.0);
+    precise float2 q = abs(p) - (halfSize - float2(r, r));
+    precise float2 qm = max(q, 0.0);
+    precise float outside = IeeeSqrt(qm.x * qm.x + qm.y * qm.y);
+    precise float inside = min(max(q.x, q.y), 0.0);
+    return (outside + inside) - r;
 }
 
 // Same as over_straight in src/compose.rs. dst and src are 0..255.
-float4 OverStraight(float4 dst, float4 src, float coverage)
+precise float4 OverStraight(precise float4 dst, precise float4 src, precise float coverage)
 {
-    float sa = (src.a / 255.0) * saturate(coverage);
+    precise float cov = saturate(coverage);
+    precise float sa = IeeeDiv(src.a, 255.0) * cov;
     if (sa <= 0.0)
     {
         return dst;
     }
-    float da = dst.a / 255.0;
-    float keep = da * (1.0 - sa);
-    float oa = sa + keep;
-    float3 rgb = clamp(floor((src.rgb * sa + dst.rgb * keep) / oa + 0.5), 0.0, 255.0);
-    return float4(rgb, clamp(floor(oa * 255.0 + 0.5), 0.0, 255.0));
+    precise float da = IeeeDiv(dst.a, 255.0);
+    precise float keep = da * (1.0 - sa);
+    precise float oa = sa + keep;
+    precise float3 num = src.rgb * sa + dst.rgb * keep;
+    precise float3 rgb = clamp(floor(IeeeDiv3(num, oa) + 0.5), 0.0, 255.0);
+    precise float outA = clamp(floor(oa * 255.0 + 0.5), 0.0, 255.0);
+    return float4(rgb, outA);
 }
 
 // Same as bt709_yuv_f32_to_rgb in src/compose.rs. Inputs are 8-bit codes.
-float3 Bt709ToRgb(float y, float u, float v)
+precise float3 Bt709ToRgb(precise float y, precise float u, precise float v)
 {
-    float yf = max(y - 16.0, 0.0) * 1.164384;
-    float uf = u - 128.0;
-    float vf = v - 128.0;
-    float3 rgb = float3(yf + 1.792741 * vf, yf - 0.213249 * uf - 0.532909 * vf, yf + 2.112402 * uf);
-    return clamp(floor(rgb + 0.5), 0.0, 255.0);
+    precise float yf = max(y - 16.0, 0.0) * 1.164384;
+    precise float uf = u - 128.0;
+    precise float vf = v - 128.0;
+    precise float r = yf + 1.792741 * vf;
+    precise float g = (yf - 0.213249 * uf) - 0.532909 * vf;
+    precise float b = yf + 2.112402 * uf;
+    return clamp(floor(float3(r, g, b) + 0.5), 0.0, 255.0);
 }
 
-float4 LoadDest(int2 p)
+precise float4 LoadDest(int2 p)
 {
     return floor(Dest.Load(int3(p, 0)) * 255.0 + 0.5);
 }
@@ -117,8 +173,10 @@ float4 LoadDest(int2 p)
 float4 PSShadowMask(float4 pos : SV_Position) : SV_Target
 {
     int2 p = int2(pos.xy);
-    float d = SdfRoundedBox(TargetCenter(p) - Shape.xy, Shape.zw, Corner);
-    return float4(saturate(0.5 - d), 0.0, 0.0, 1.0);
+    precise float2 rel = TargetCenter(p) - Shape.xy;
+    precise float d = SdfRoundedBox(rel, Shape.zw, Corner);
+    precise float cov = saturate(0.5 - d);
+    return float4(cov, 0.0, 0.0, 1.0);
 }
 
 // MASK_ONE in src/compose.rs: mask values are whole multiples of 1 / 32768,
@@ -152,12 +210,12 @@ float4 PSBoxBlur(float4 pos : SV_Position) : SV_Target
 float4 PSShadowPaint(float4 pos : SV_Position) : SV_Target
 {
     int2 p = int2(pos.xy);
-    float coverage = Mask.Load(int3(p + int2(Margin, Margin), 0));
+    precise float coverage = Mask.Load(int3(p + int2(Margin, Margin), 0));
     return OverStraight(LoadDest(p), ShadowColor, coverage) / 255.0;
 }
 
 // Offsets are packed four to a register.
-float StopOffset(int i)
+precise float StopOffset(int i)
 {
     float4 v = StopOffsets[i >> 2];
     int c = i & 3;
@@ -166,13 +224,13 @@ float StopOffset(int i)
 
 // Same as sample_multi_stop_gradient in src/lib.rs, including the rounding
 // of each mix to whole codes.
-float4 SampleStops(float t)
+precise float4 SampleStops(precise float t)
 {
     if (StopCount == 1)
     {
         return StopColors[0];
     }
-    float c = saturate(t);
+    precise float c = saturate(t);
     if (c <= StopOffset(0))
     {
         return StopColors[0];
@@ -186,9 +244,13 @@ float4 SampleStops(float t)
         }
         if (c <= StopOffset(i))
         {
-            float span = max(StopOffset(i) - StopOffset(i - 1), 1e-5);
-            float local = saturate((c - StopOffset(i - 1)) / span);
-            return floor(StopColors[i - 1] * (1.0 - local) + StopColors[i] * local + 0.5);
+            precise float prevOff = StopOffset(i - 1);
+            precise float span = max(StopOffset(i) - prevOff, 1e-5);
+            precise float local = saturate(IeeeDiv(c - prevOff, span));
+            precise float inv = 1.0 - local;
+            precise float4 a = StopColors[i - 1] * inv;
+            precise float4 b = StopColors[i] * local;
+            return floor((a + b) + 0.5);
         }
     }
     return StopColors[StopCount - 1];
@@ -197,20 +259,22 @@ float4 SampleStops(float t)
 float4 PSGradient(float4 pos : SV_Position) : SV_Target
 {
     int2 p = int2(pos.xy);
-    float2 c = TargetCenter(p);
-    float t;
+    precise float2 c = TargetCenter(p);
+    precise float t;
     if (Kind == 0)
     {
         // Same as linear_gradient_t in src/compose.rs.
-        float2 d = Geometry.zw - Geometry.xy;
-        float len2 = dot(d, d);
-        t = len2 < 1e-12 ? 1.0 : saturate(dot(c - Geometry.xy, d) / len2);
+        precise float2 d = Geometry.zw - Geometry.xy;
+        precise float len2 = d.x * d.x + d.y * d.y;
+        precise float2 rel = c - Geometry.xy;
+        precise float proj = rel.x * d.x + rel.y * d.y;
+        t = len2 < 1e-12 ? 1.0 : saturate(IeeeDiv(proj, len2));
     }
     else
     {
         // Same as sample_radial_gradient in src/lib.rs.
-        float2 n = (c - Geometry.xy) / max(Geometry.zw, float2(0.5, 0.5));
-        t = saturate(length(n));
+        precise float2 n = IeeeDiv2(c - Geometry.xy, max(Geometry.zw, float2(0.5, 0.5)));
+        t = saturate(IeeeSqrt(n.x * n.x + n.y * n.y));
     }
     return OverStraight(LoadDest(p), SampleStops(t), 1.0) / 255.0;
 }

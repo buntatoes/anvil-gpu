@@ -409,7 +409,7 @@ fn scene(case: u64, seed: u64, make: fn(&mut Rng, f32, f32, bool) -> Call, mixed
                 "case {case}, call {n} ({width}x{height}, stride {stride}): byte {i} (x {}, y {}, channel {}) is {} on the CPU and {} on the device; {}",
                 (i % stride) / 4,
                 i / stride,
-                i % 4,
+                (i % stride) % 4,
                 soft[i],
                 hard[i],
                 call.describe()
@@ -507,4 +507,15 @@ fn the_shadow_paint_that_rounded_differently_matches() {
         return;
     }
     scene(27, 0x313e_138c, shadow, true);
+}
+
+/// Seed 0x6ade0002 + 1234, case 83: call 5 fills a gradient whose blue mix at
+/// (150, 117) came out at 26.499998 on the CPU and rounded to 27 before shader
+/// division and square root were refined to 0.5 ULP.
+#[test]
+fn the_gradient_scene_that_was_one_code_apart_matches() {
+    if device_or_skip("gradient scene 83").is_none() {
+        return;
+    }
+    scene(83, 0x6ade_0002u64.wrapping_add(1234), gradient, false);
 }
