@@ -20,4 +20,4 @@ All unsafe code is in `src/sys.rs`, `src/sys_gl.rs`, and `src/sys_d3d.rs`, which
 
 There is no persistently mapped GPU memory and no video decoder in this crate.
 
-Version 0.9.1 is current.
+Version 0.10.0 (`v.10`) is current.

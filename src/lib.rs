@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0-OR-Commercial
 // Copyright (c) 2026 Buntato
 //! Compositor passes on the CPU, and the same passes on a GPU where one works.
 //!
@@ -50,16 +50,16 @@ pub use backend::{
     probe_hardware, select_backend,
 };
 pub use compose::{
-    BlitDesc, Bounds, ComposeError, Filter, GradientDesc, GradientShape, MAX_BLUR_RADIUS,
-    MAX_GRADIENT_STOPS, MAX_SIDE, RgbaTarget, ShadowDesc, VideoFrame, bt709_yuv_f32_to_rgb,
-    draw_blit, draw_box_shadow, draw_gradient, linear_gradient_t, over_straight,
-    shadow_pass_radius,
+    BlitDesc, Bounds, ComposeError, Filter, GpuSceneBatch, GpuSceneOp, GradientDesc, GradientShape,
+    MAX_BLUR_RADIUS, MAX_GRADIENT_STOPS, MAX_SIDE, RgbaTarget, ShadowDesc, VideoFrame,
+    bt709_yuv_f32_to_rgb, draw_blit, draw_box_shadow, draw_glyph_coverage, draw_gradient,
+    draw_scene_batch, draw_solid_rect, linear_gradient_t, over_straight, shadow_pass_radius,
 };
 pub use device::{
     GpuBackend, GpuDevice, composite_rgba_frame, convert_rgba_on_device, device_converts,
     device_presents, device_tiles_shaded, present_nv12_on_device,
 };
-pub use gpu::device_pass_draws;
+pub use gpu::{device_pass_draws, scene_batches_executed, scene_ops_executed};
 
 /// HLSL Shader Model 5.0 source text from `shaders/compositor.hlsl`.
 ///
@@ -299,6 +299,103 @@ impl Nv12Surface {
                 let uv_idx = ((py / 2) * uv_w + (px / 2)) * 2;
                 let u = self.uv_plane[uv_idx];
                 let v = self.uv_plane[uv_idx + 1];
+                let c = bt709_yuv_to_rgba(y, u, v);
+                let dst = (py * w + px) * 4;
+                rgba[dst] = c.r;
+                rgba[dst + 1] = c.g;
+                rgba[dst + 2] = c.b;
+                rgba[dst + 3] = 255;
+            }
+        }
+        rgba
+    }
+}
+
+/// Planar 4:2:0 I420 (YUV420p) buffer in limited-range BT.709.
+///
+/// `y_plane` is one luma byte per pixel (`width * height`).
+/// `u_plane` and `v_plane` are separate Cb and Cr planes (`(width / 2) * (height / 2)` bytes each).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct I420Surface {
+    /// Width in pixels (even, at least 2).
+    pub width: u32,
+    /// Height in pixels (even, at least 2).
+    pub height: u32,
+    /// Limited-range luma plane (`width * height` bytes).
+    pub y_plane: Vec<u8>,
+    /// Limited-range Cb plane (`(width / 2) * (height / 2)` bytes).
+    pub u_plane: Vec<u8>,
+    /// Limited-range Cr plane (`(width / 2) * (height / 2)` bytes).
+    pub v_plane: Vec<u8>,
+}
+
+impl I420Surface {
+    /// Allocates an even-sized I420 surface filled with limited-range black (`Y = 16`, `U = 128`, `V = 128`).
+    pub fn new(width: u32, height: u32) -> Self {
+        let w = width.max(2) & !1;
+        let h = height.max(2) & !1;
+        let y_len = (w as usize) * (h as usize);
+        let c_len = ((w / 2) as usize) * ((h / 2) as usize);
+        Self {
+            width: w,
+            height: h,
+            y_plane: vec![16; y_len],
+            u_plane: vec![128; c_len],
+            v_plane: vec![128; c_len],
+        }
+    }
+
+    /// Converts tightly packed straight RGBA8 into limited-range BT.709 I420.
+    pub fn from_rgba_bt709(width: u32, height: u32, rgba: &[u8]) -> Option<Self> {
+        let nv12 = Nv12Surface::from_rgba_bt709(width, height, rgba)?;
+        Some(Self::from_nv12(&nv12))
+    }
+
+    /// Converts an [`Nv12Surface`] into planar [`I420Surface`] by de-interleaving the UV plane.
+    pub fn from_nv12(nv12: &Nv12Surface) -> Self {
+        let c_len = nv12.uv_plane.len() / 2;
+        let mut u_plane = Vec::with_capacity(c_len);
+        let mut v_plane = Vec::with_capacity(c_len);
+        for pair in nv12.uv_plane.chunks_exact(2) {
+            u_plane.push(pair[0]);
+            v_plane.push(pair[1]);
+        }
+        Self {
+            width: nv12.width,
+            height: nv12.height,
+            y_plane: nv12.y_plane.clone(),
+            u_plane,
+            v_plane,
+        }
+    }
+
+    /// Converts this planar [`I420Surface`] into a semi-planar [`Nv12Surface`].
+    pub fn to_nv12(&self) -> Nv12Surface {
+        let mut uv_plane = Vec::with_capacity(self.u_plane.len() * 2);
+        for (&u, &v) in self.u_plane.iter().zip(&self.v_plane) {
+            uv_plane.push(u);
+            uv_plane.push(v);
+        }
+        Nv12Surface {
+            width: self.width,
+            height: self.height,
+            y_plane: self.y_plane.clone(),
+            uv_plane,
+        }
+    }
+
+    /// Expands this I420 surface into tightly packed straight RGBA8.
+    pub fn to_rgba_bt709(&self) -> Vec<u8> {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let cw = w / 2;
+        let mut rgba = vec![0u8; w * h * 4];
+        for py in 0..h {
+            for px in 0..w {
+                let y = self.y_plane[py * w + px];
+                let c_idx = (py / 2) * cw + (px / 2);
+                let u = self.u_plane[c_idx];
+                let v = self.v_plane[c_idx];
                 let c = bt709_yuv_to_rgba(y, u, v);
                 let dst = (py * w + px) * 4;
                 rgba[dst] = c.r;
@@ -952,7 +1049,7 @@ mod tests {
             // A Windows checkout may turn the shader files' line endings into
             // CRLF, so compare with LF endings.
             assert!(src.replace("\r\n", "\n").starts_with(
-                "// SPDX-License-Identifier: MPL-2.0\n// Copyright (c) 2026 Buntato\n"
+                "// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0-OR-Commercial\n// Copyright (c) 2026 Buntato\n"
             ));
         }
         assert!(PASSES_GLSL.contains("#version 330 core"));
@@ -1065,5 +1162,72 @@ mod tests {
         }
         #[cfg(not(target_os = "windows"))]
         assert!(!status.device_created);
+    }
+
+    #[test]
+    fn executes_batched_gpu_scene_with_i420_nv12_rounded_rects_shadows_gradients_and_glyphs() {
+        let mut batch = GpuSceneBatch::with_capacity(12);
+        batch.push_clear(GpuColor::rgba(20, 24, 32, 255));
+        batch.push_clip(GpuRect::new(0.0, 0.0, 48.0, 48.0));
+
+        let mut shadow = ShadowDesc::new(
+            GpuRect::new(6.0, 6.0, 24.0, 14.0),
+            GpuColor::rgba(0, 0, 0, 180),
+        );
+        shadow.blur_radius = 4.0;
+        shadow.corner_radius = 3.0;
+        batch.push_box_shadow(shadow);
+
+        batch.push_rounded_rect(
+            GpuRect::new(6.0, 6.0, 24.0, 14.0),
+            GpuColor::rgba(40, 120, 220, 255),
+            3.0,
+            1.0,
+            GpuColor::rgba(255, 255, 255, 255),
+        );
+
+        batch.push_gradient(
+            GpuRect::new(6.0, 24.0, 36.0, 10.0),
+            GradientShape::Linear {
+                start_x: 6.0,
+                start_y: 24.0,
+                end_x: 42.0,
+                end_y: 24.0,
+            },
+            vec![
+                GpuGradientStop::new(0.0, GpuColor::rgba(240, 80, 40, 255)),
+                GpuGradientStop::new(1.0, GpuColor::rgba(40, 180, 240, 255)),
+            ],
+        );
+
+        let src_rgba = [60u8, 200, 90, 255].repeat(16);
+        let i420 = I420Surface::from_rgba_bt709(4, 4, &src_rgba).unwrap();
+        assert_eq!(i420.to_nv12().width, 4);
+        assert_eq!(i420.to_rgba_bt709().len(), 64);
+        let mut blit = BlitDesc::new(34, 6, 8, 8);
+        blit.filter = Filter::Bilinear;
+        batch.push_blit_i420(i420, blit);
+
+        let glyph_cov = vec![255u8; 16];
+        batch.push_glyph_coverage(10, 38, 4, 4, glyph_cov, GpuColor::rgba(255, 230, 80, 255));
+        batch.pop_clip();
+
+        let batches_before = scene_batches_executed();
+        let ops_before = scene_ops_executed();
+
+        let mut gpu_buf = vec![0u8; 48 * 48 * 4];
+        let mut soft_buf = vec![0u8; 48 * 48 * 4];
+        {
+            let mut gpu_target = RgbaTarget::packed(&mut gpu_buf, 48, 48).unwrap();
+            let mut comp = Compositor::open();
+            comp.execute_scene_batch(&mut gpu_target, &batch).unwrap();
+        }
+        {
+            let mut soft_target = RgbaTarget::packed(&mut soft_buf, 48, 48).unwrap();
+            draw_scene_batch(&mut soft_target, &batch).unwrap();
+        }
+        assert_eq!(gpu_buf, soft_buf);
+        assert!(scene_batches_executed() > batches_before);
+        assert!(scene_ops_executed() >= ops_before + batch.len() as u64);
     }
 }

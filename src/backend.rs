@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0-OR-Commercial
 // Copyright (c) 2026 Buntato
 //! Backend choice for the compositor passes, with an automatic software fallback.
 //!
@@ -17,7 +17,8 @@
 use std::sync::OnceLock;
 
 use crate::compose::{
-    self, BlitDesc, Bounds, ComposeError, GradientDesc, RgbaTarget, ShadowDesc, VideoFrame,
+    self, BlitDesc, Bounds, ComposeError, GpuSceneBatch, GradientDesc, RgbaTarget, ShadowDesc,
+    VideoFrame,
 };
 
 /// Which kind of backend drew a call.
@@ -53,6 +54,13 @@ pub trait ComposeBackend {
         frame: &VideoFrame<'_>,
         desc: &BlitDesc,
     ) -> Result<(), ComposeError>;
+    fn execute_scene_batch(
+        &mut self,
+        target: &mut RgbaTarget<'_>,
+        batch: &GpuSceneBatch,
+    ) -> Result<(), ComposeError> {
+        compose::draw_scene_batch(target, batch)
+    }
 }
 
 /// The CPU passes in [`crate::draw_box_shadow`], [`crate::draw_gradient`], and
@@ -356,6 +364,30 @@ impl Compositor {
             return Ok(());
         };
         self.run(target, bounds, |b, t| b.blit_frame(t, frame, desc))
+    }
+
+    /// Execute an entire [`GpuSceneBatch`] in a single GPU session, falling back
+    /// transactionally to [`SoftwareBackend`] on any device error.
+    pub fn execute_scene_batch(
+        &mut self,
+        target: &mut RgbaTarget<'_>,
+        batch: &GpuSceneBatch,
+    ) -> Result<(), ComposeError> {
+        compose::validate_scene_batch(batch)?;
+        if batch.is_empty() || target.width() == 0 || target.height() == 0 {
+            return Ok(());
+        }
+        let full = Bounds {
+            x0: 0,
+            y0: 0,
+            x1: target.width(),
+            y1: target.height(),
+        };
+        let res = self.run(target, full, |b, t| b.execute_scene_batch(t, batch));
+        if res.is_ok() {
+            crate::gpu::record_scene_batch_telemetry(batch.len());
+        }
+        res
     }
 
     fn run(

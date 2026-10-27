@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0-OR-Commercial
 // Copyright (c) 2026 Buntato
 //! Compositor drawing on the CPU: blurred box shadows, linear and radial
 //! gradients, and video frame blits.
@@ -902,6 +902,21 @@ impl VideoFrame<'_> {
         }
     }
 
+    /// Wraps an [`crate::I420Surface`] (tightly packed Y, U, and V planes).
+    pub fn from_i420(surface: &crate::I420Surface) -> VideoFrame<'_> {
+        let cw = (surface.width as usize).div_ceil(2);
+        VideoFrame::I420 {
+            y: &surface.y_plane,
+            y_stride: surface.width as usize,
+            u: &surface.u_plane,
+            u_stride: cw,
+            v: &surface.v_plane,
+            v_stride: cw,
+            width: surface.width,
+            height: surface.height,
+        }
+    }
+
     /// Checks sizes, strides, and plane lengths.
     pub fn validate(&self) -> Result<(), ComposeError> {
         let (w, h) = (self.width(), self.height());
@@ -1239,6 +1254,565 @@ pub fn draw_blit(
                 }
             };
             target.px_mut(x, y).copy_from_slice(&out);
+        }
+    }
+    Ok(())
+}
+
+/// Draw an axis-aligned or rounded rectangle with optional border stroke into `target`.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_solid_rect(
+    target: &mut RgbaTarget<'_>,
+    rect: GpuRect,
+    color: GpuColor,
+    corner_radius: f32,
+    border_width: f32,
+    border_color: GpuColor,
+    clip: Option<GpuRect>,
+) -> Result<(), ComposeError> {
+    if !rect_is_valid(rect) || !corner_radius.is_finite() || !border_width.is_finite() {
+        return Err(ComposeError::BadInput);
+    }
+    let Some(area) = target_bounds(target, clip)? else {
+        return Ok(());
+    };
+    let Some(fill) = rect_bounds(rect, target.width, target.height) else {
+        return Ok(());
+    };
+    let Some(bounds) = fill.intersect(area) else {
+        return Ok(());
+    };
+    let r = corner_radius.max(0.0);
+    let bw = border_width.max(0.0);
+    if r == 0.0 && bw == 0.0 {
+        for y in bounds.y0..bounds.y1 {
+            for x in bounds.x0..bounds.x1 {
+                over_straight(target.px_mut(x, y), color, 1.0);
+            }
+        }
+        return Ok(());
+    }
+    let half_w = rect.width * 0.5;
+    let half_h = rect.height * 0.5;
+    let cx = rect.x + half_w;
+    let cy = rect.y + half_h;
+    for y in bounds.y0..bounds.y1 {
+        let sy = (y as f32 + 0.5) - cy;
+        for x in bounds.x0..bounds.x1 {
+            let sx = (x as f32 + 0.5) - cx;
+            let dist = sdf_rounded_box(sx, sy, half_w, half_h, r);
+            let outer_cov = (0.5 - dist).clamp(0.0, 1.0);
+            if outer_cov <= 0.0 {
+                continue;
+            }
+            let px_color = if bw > 0.0 {
+                let inner_dist = dist + bw;
+                let border_mix = (0.5 + inner_dist).clamp(0.0, 1.0);
+                let inv = 1.0 - border_mix;
+                GpuColor::rgba(
+                    ((color.r as f32) * inv + (border_color.r as f32) * border_mix + 0.5).floor()
+                        as u8,
+                    ((color.g as f32) * inv + (border_color.g as f32) * border_mix + 0.5).floor()
+                        as u8,
+                    ((color.b as f32) * inv + (border_color.b as f32) * border_mix + 0.5).floor()
+                        as u8,
+                    ((color.a as f32) * inv + (border_color.a as f32) * border_mix + 0.5).floor()
+                        as u8,
+                )
+            } else {
+                color
+            };
+            over_straight(target.px_mut(x, y), px_color, outer_cov);
+        }
+    }
+    Ok(())
+}
+
+/// Blend an 8-bit coverage glyph bitmap (`width * height` bytes) into `target` at `(x, y)`.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_glyph_coverage(
+    target: &mut RgbaTarget<'_>,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    coverage: &[u8],
+    color: GpuColor,
+    clip: Option<GpuRect>,
+) -> Result<(), ComposeError> {
+    let needed = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or(ComposeError::BadInput)?;
+    if coverage.len() < needed {
+        return Err(ComposeError::BadInput);
+    }
+    let Some(area) = target_bounds(target, clip)? else {
+        return Ok(());
+    };
+    if width == 0 || height == 0 || color.a == 0 {
+        return Ok(());
+    }
+    for gy in 0..height {
+        let dst_y = y + gy as i32;
+        if dst_y < area.y0 as i32 || dst_y >= area.y1 as i32 {
+            continue;
+        }
+        for gx in 0..width {
+            let dst_x = x + gx as i32;
+            if dst_x < area.x0 as i32 || dst_x >= area.x1 as i32 {
+                continue;
+            }
+            let cov = coverage[(gy * width + gx) as usize];
+            if cov == 0 {
+                continue;
+            }
+            over_straight(
+                target.px_mut(dst_x as u32, dst_y as u32),
+                color,
+                cov as f32 / 255.0,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// One operation inside a [`GpuSceneBatch`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum GpuSceneOp {
+    /// Fill the entire target (or active clip) with a flat color.
+    Clear(GpuColor),
+    /// Intersect the active scissor clip stack with `rect`.
+    PushClip(GpuRect),
+    /// Pop the most recently pushed clip rectangle.
+    PopClip,
+    /// Axis-aligned or rounded SDF rectangle with optional border stroke.
+    SolidRect {
+        rect: GpuRect,
+        color: GpuColor,
+        corner_radius: f32,
+        border_width: f32,
+        border_color: GpuColor,
+    },
+    /// Blurred or sharp CSS box shadow.
+    BoxShadow(ShadowDesc),
+    /// Multi-stop linear or radial gradient.
+    Gradient {
+        rect: GpuRect,
+        shape: GradientShape,
+        stops: Vec<GpuGradientStop>,
+    },
+    /// Scaled RGBA8 texture/canvas/image blit.
+    BlitRgba {
+        width: u32,
+        height: u32,
+        stride: usize,
+        pixels: Vec<u8>,
+        desc: BlitDesc,
+    },
+    /// Scaled BT.709 semi-planar NV12 video frame blit.
+    BlitNv12 {
+        surface: crate::Nv12Surface,
+        desc: BlitDesc,
+    },
+    /// Scaled BT.709 planar I420 video frame blit.
+    BlitI420 {
+        surface: crate::I420Surface,
+        desc: BlitDesc,
+    },
+    /// 8-bit coverage glyph bitmap draw.
+    GlyphCoverage {
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        coverage: Vec<u8>,
+        color: GpuColor,
+    },
+}
+
+/// Ordered command buffer of 2D scene operations executed as a single GPU batch.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GpuSceneBatch {
+    ops: Vec<GpuSceneOp>,
+}
+
+impl GpuSceneBatch {
+    /// Construct an empty scene command batch.
+    pub fn new() -> Self {
+        Self { ops: Vec::new() }
+    }
+
+    /// Construct an empty scene command batch with pre-allocated capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            ops: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Number of operations recorded in this batch.
+    pub fn len(&self) -> usize {
+        self.ops.len()
+    }
+
+    /// True when no operations have been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+
+    /// Clear all recorded operations while retaining capacity.
+    pub fn clear_ops(&mut self) {
+        self.ops.clear();
+    }
+
+    /// Borrow the recorded operations slice.
+    pub fn ops(&self) -> &[GpuSceneOp] {
+        &self.ops
+    }
+
+    /// Append a target clear operation.
+    pub fn push_clear(&mut self, color: GpuColor) {
+        self.ops.push(GpuSceneOp::Clear(color));
+    }
+
+    /// Push a scissor clip rectangle onto the batch clip stack.
+    pub fn push_clip(&mut self, rect: GpuRect) {
+        self.ops.push(GpuSceneOp::PushClip(rect));
+    }
+
+    /// Pop the top scissor clip rectangle.
+    pub fn pop_clip(&mut self) {
+        self.ops.push(GpuSceneOp::PopClip);
+    }
+
+    /// Append an unrounded solid rectangle.
+    pub fn push_solid_rect(&mut self, rect: GpuRect, color: GpuColor) {
+        self.ops.push(GpuSceneOp::SolidRect {
+            rect,
+            color,
+            corner_radius: 0.0,
+            border_width: 0.0,
+            border_color: GpuColor::rgba(0, 0, 0, 0),
+        });
+    }
+
+    /// Append a rounded SDF rectangle with optional border stroke.
+    pub fn push_rounded_rect(
+        &mut self,
+        rect: GpuRect,
+        color: GpuColor,
+        corner_radius: f32,
+        border_width: f32,
+        border_color: GpuColor,
+    ) {
+        self.ops.push(GpuSceneOp::SolidRect {
+            rect,
+            color,
+            corner_radius,
+            border_width,
+            border_color,
+        });
+    }
+
+    /// Append a blurred or sharp CSS box shadow.
+    pub fn push_box_shadow(&mut self, desc: ShadowDesc) {
+        self.ops.push(GpuSceneOp::BoxShadow(desc));
+    }
+
+    /// Append a multi-stop linear or radial gradient.
+    pub fn push_gradient(
+        &mut self,
+        rect: GpuRect,
+        shape: GradientShape,
+        stops: Vec<GpuGradientStop>,
+    ) {
+        self.ops.push(GpuSceneOp::Gradient { rect, shape, stops });
+    }
+
+    /// Append a scaled RGBA8 image/canvas blit.
+    pub fn push_blit_rgba(
+        &mut self,
+        width: u32,
+        height: u32,
+        stride: usize,
+        pixels: Vec<u8>,
+        desc: BlitDesc,
+    ) {
+        self.ops.push(GpuSceneOp::BlitRgba {
+            width,
+            height,
+            stride,
+            pixels,
+            desc,
+        });
+    }
+
+    /// Append a scaled semi-planar NV12 video frame blit.
+    pub fn push_blit_nv12(&mut self, surface: crate::Nv12Surface, desc: BlitDesc) {
+        self.ops.push(GpuSceneOp::BlitNv12 { surface, desc });
+    }
+
+    /// Append a scaled planar I420 video frame blit.
+    pub fn push_blit_i420(&mut self, surface: crate::I420Surface, desc: BlitDesc) {
+        self.ops.push(GpuSceneOp::BlitI420 { surface, desc });
+    }
+
+    /// Append an 8-bit coverage glyph bitmap draw.
+    pub fn push_glyph_coverage(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        coverage: Vec<u8>,
+        color: GpuColor,
+    ) {
+        self.ops.push(GpuSceneOp::GlyphCoverage {
+            x,
+            y,
+            width,
+            height,
+            coverage,
+            color,
+        });
+    }
+}
+
+pub(crate) fn intersect_gpu_rect(a: GpuRect, b: GpuRect) -> GpuRect {
+    let x0 = a.x.max(b.x);
+    let y0 = a.y.max(b.y);
+    let x1 = (a.x + a.width).min(b.x + b.width);
+    let y1 = (a.y + a.height).min(b.y + b.height);
+    GpuRect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+}
+
+pub(crate) fn merge_clip(stack_top: Option<GpuRect>, op_clip: Option<GpuRect>) -> Option<GpuRect> {
+    match (stack_top, op_clip) {
+        (Some(a), Some(b)) => Some(intersect_gpu_rect(a, b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// Validate all operations in `batch` before any target pixels are modified.
+pub(crate) fn validate_scene_batch(batch: &GpuSceneBatch) -> Result<(), ComposeError> {
+    for op in &batch.ops {
+        match op {
+            GpuSceneOp::Clear(_) | GpuSceneOp::PopClip => {}
+            GpuSceneOp::PushClip(rect) => {
+                if !rect_is_valid(*rect) {
+                    return Err(ComposeError::BadInput);
+                }
+            }
+            GpuSceneOp::SolidRect {
+                rect,
+                corner_radius,
+                border_width,
+                ..
+            } => {
+                if !rect_is_valid(*rect)
+                    || !corner_radius.is_finite()
+                    || !border_width.is_finite()
+                    || *corner_radius < 0.0
+                    || *border_width < 0.0
+                {
+                    return Err(ComposeError::BadInput);
+                }
+            }
+            GpuSceneOp::BoxShadow(desc) => {
+                if !desc.is_valid() {
+                    return Err(ComposeError::BadInput);
+                }
+            }
+            GpuSceneOp::Gradient { rect, shape, stops } => {
+                if !rect_is_valid(*rect) || Stops::new(stops).is_none() {
+                    return Err(ComposeError::BadInput);
+                }
+                let shape_ok = match *shape {
+                    GradientShape::Linear {
+                        start_x,
+                        start_y,
+                        end_x,
+                        end_y,
+                    } => [start_x, start_y, end_x, end_y]
+                        .iter()
+                        .all(|v| v.is_finite()),
+                    GradientShape::Radial {
+                        center_x,
+                        center_y,
+                        radius_x,
+                        radius_y,
+                    } => {
+                        [center_x, center_y, radius_x, radius_y]
+                            .iter()
+                            .all(|v| v.is_finite())
+                            && radius_x >= 0.0
+                            && radius_y >= 0.0
+                    }
+                };
+                if !shape_ok {
+                    return Err(ComposeError::BadInput);
+                }
+            }
+            GpuSceneOp::BlitRgba {
+                width,
+                height,
+                stride,
+                pixels,
+                desc,
+            } => {
+                if desc.width > MAX_SIDE || desc.height > MAX_SIDE {
+                    return Err(ComposeError::BadInput);
+                }
+                let frame = VideoFrame::Rgba {
+                    pixels,
+                    width: *width,
+                    height: *height,
+                    stride: *stride,
+                };
+                frame.validate()?;
+            }
+            GpuSceneOp::BlitNv12 { surface, desc } => {
+                if desc.width > MAX_SIDE || desc.height > MAX_SIDE {
+                    return Err(ComposeError::BadInput);
+                }
+                VideoFrame::from_nv12(surface).validate()?;
+            }
+            GpuSceneOp::BlitI420 { surface, desc } => {
+                if desc.width > MAX_SIDE || desc.height > MAX_SIDE {
+                    return Err(ComposeError::BadInput);
+                }
+                VideoFrame::from_i420(surface).validate()?;
+            }
+            GpuSceneOp::GlyphCoverage {
+                width,
+                height,
+                coverage,
+                ..
+            } => {
+                let needed = (*width as usize)
+                    .checked_mul(*height as usize)
+                    .ok_or(ComposeError::BadInput)?;
+                if coverage.len() < needed {
+                    return Err(ComposeError::BadInput);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Execute a [`GpuSceneBatch`] in software against `target`.
+pub fn draw_scene_batch(
+    target: &mut RgbaTarget<'_>,
+    batch: &GpuSceneBatch,
+) -> Result<(), ComposeError> {
+    validate_scene_batch(batch)?;
+    let mut clips: Vec<GpuRect> = Vec::new();
+    for op in &batch.ops {
+        let active_clip = clips.last().copied();
+        match op {
+            GpuSceneOp::Clear(color) => {
+                let Some(area) = target_bounds(target, active_clip)? else {
+                    continue;
+                };
+                for y in area.y0..area.y1 {
+                    for x in area.x0..area.x1 {
+                        let px = target.px_mut(x, y);
+                        px[0] = color.r;
+                        px[1] = color.g;
+                        px[2] = color.b;
+                        px[3] = color.a;
+                    }
+                }
+            }
+            GpuSceneOp::PushClip(rect) => {
+                let next = match active_clip {
+                    Some(prev) => intersect_gpu_rect(prev, *rect),
+                    None => *rect,
+                };
+                clips.push(next);
+            }
+            GpuSceneOp::PopClip => {
+                clips.pop();
+            }
+            GpuSceneOp::SolidRect {
+                rect,
+                color,
+                corner_radius,
+                border_width,
+                border_color,
+            } => {
+                draw_solid_rect(
+                    target,
+                    *rect,
+                    *color,
+                    *corner_radius,
+                    *border_width,
+                    *border_color,
+                    active_clip,
+                )?;
+            }
+            GpuSceneOp::BoxShadow(desc) => {
+                let mut d = *desc;
+                d.clip = merge_clip(active_clip, d.clip);
+                draw_box_shadow(target, &d)?;
+            }
+            GpuSceneOp::Gradient { rect, shape, stops } => {
+                let desc = GradientDesc {
+                    rect: *rect,
+                    shape: *shape,
+                    stops,
+                    clip: active_clip,
+                };
+                draw_gradient(target, &desc)?;
+            }
+            GpuSceneOp::BlitRgba {
+                width,
+                height,
+                stride,
+                pixels,
+                desc,
+            } => {
+                let mut d = *desc;
+                d.clip = merge_clip(active_clip, d.clip);
+                let frame = VideoFrame::Rgba {
+                    pixels,
+                    width: *width,
+                    height: *height,
+                    stride: *stride,
+                };
+                draw_blit(target, &frame, &d)?;
+            }
+            GpuSceneOp::BlitNv12 { surface, desc } => {
+                let mut d = *desc;
+                d.clip = merge_clip(active_clip, d.clip);
+                draw_blit(target, &VideoFrame::from_nv12(surface), &d)?;
+            }
+            GpuSceneOp::BlitI420 { surface, desc } => {
+                let mut d = *desc;
+                d.clip = merge_clip(active_clip, d.clip);
+                draw_blit(target, &VideoFrame::from_i420(surface), &d)?;
+            }
+            GpuSceneOp::GlyphCoverage {
+                x,
+                y,
+                width,
+                height,
+                coverage,
+                color,
+            } => {
+                draw_glyph_coverage(
+                    target,
+                    *x,
+                    *y,
+                    *width,
+                    *height,
+                    coverage,
+                    *color,
+                    active_clip,
+                )?;
+            }
         }
     }
     Ok(())

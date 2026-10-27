@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0-OR-Commercial
 // Copyright (c) 2026 Buntato
 //! The compositor passes on a device, shared by every device backend.
 //!
@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::backend::{BackendKind, ComposeBackend};
 use crate::compose::{
-    self, BlitDesc, ComposeError, Filter, GradientDesc, GradientShape, RgbaTarget, ShadowDesc,
-    VideoFrame,
+    self, BlitDesc, ComposeError, Filter, GpuSceneBatch, GpuSceneOp, GradientDesc, GradientShape,
+    RgbaTarget, ShadowDesc, VideoFrame,
 };
 use crate::{GpuColor, GpuGradientStop, GpuRect};
 
@@ -26,6 +26,8 @@ use crate::{GpuColor, GpuGradientStop, GpuRect};
 pub(crate) const MAX_DEVICE_TEXELS: u64 = 1 << 24;
 
 static DEVICE_PASS_DRAWS: AtomicU64 = AtomicU64::new(0);
+static SCENE_BATCHES_EXECUTED: AtomicU64 = AtomicU64::new(0);
+static SCENE_OPS_EXECUTED: AtomicU64 = AtomicU64::new(0);
 
 /// Pass draws a device finished since the process started.
 ///
@@ -34,6 +36,21 @@ static DEVICE_PASS_DRAWS: AtomicU64 = AtomicU64::new(0);
 /// it shows whether calls really ran on a device.
 pub fn device_pass_draws() -> u64 {
     DEVICE_PASS_DRAWS.load(Ordering::Relaxed)
+}
+
+/// Number of [`GpuSceneBatch`] command buffers executed since process start.
+pub fn scene_batches_executed() -> u64 {
+    SCENE_BATCHES_EXECUTED.load(Ordering::Relaxed)
+}
+
+/// Total number of [`GpuSceneOp`] operations executed across scene batches since process start.
+pub fn scene_ops_executed() -> u64 {
+    SCENE_OPS_EXECUTED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn record_scene_batch_telemetry(ops_count: usize) {
+    SCENE_BATCHES_EXECUTED.fetch_add(1, Ordering::Relaxed);
+    SCENE_OPS_EXECUTED.fetch_add(ops_count as u64, Ordering::Relaxed);
 }
 
 /// Texel layouts the passes use.
@@ -769,6 +786,147 @@ impl<D: SharedDevice> ComposeBackend for DeviceBackend<D> {
             |t| compose::draw_blit(t, frame, desc),
         )
     }
+
+    fn execute_scene_batch(
+        &mut self,
+        target: &mut RgbaTarget<'_>,
+        batch: &GpuSceneBatch,
+    ) -> Result<(), ComposeError> {
+        let fail_draw = self.fail_draw;
+        let mut device = self.device.lock().unwrap_or_else(|e| e.into_inner());
+        device.with_passes(|dev| {
+            let mut faulty = FaultyDraws {
+                inner: dev,
+                fail_draw,
+                draws: 0,
+            };
+            execute_batch_on_pass_device(&mut faulty, target, batch)
+        })?
+    }
+}
+
+fn execute_batch_on_pass_device(
+    dev: &mut dyn PassDevice,
+    target: &mut RgbaTarget<'_>,
+    batch: &GpuSceneBatch,
+) -> Result<(), ComposeError> {
+    let mut clips: Vec<GpuRect> = Vec::new();
+    for op in batch.ops() {
+        let active_clip = clips.last().copied();
+        match op {
+            GpuSceneOp::Clear(color) => {
+                let single = {
+                    let mut b = GpuSceneBatch::with_capacity(2);
+                    if let Some(c) = active_clip {
+                        b.push_clip(c);
+                    }
+                    b.push_clear(*color);
+                    b
+                };
+                compose::draw_scene_batch(target, &single)?;
+            }
+            GpuSceneOp::PushClip(rect) => {
+                let next = match active_clip {
+                    Some(prev) => compose::intersect_gpu_rect(prev, *rect),
+                    None => *rect,
+                };
+                clips.push(next);
+            }
+            GpuSceneOp::PopClip => {
+                clips.pop();
+            }
+            GpuSceneOp::SolidRect {
+                rect,
+                color,
+                corner_radius,
+                border_width,
+                border_color,
+            } => {
+                compose::draw_solid_rect(
+                    target,
+                    *rect,
+                    *color,
+                    *corner_radius,
+                    *border_width,
+                    *border_color,
+                    active_clip,
+                )?;
+            }
+            GpuSceneOp::BoxShadow(desc) => {
+                let mut d = *desc;
+                d.clip = compose::merge_clip(active_clip, d.clip);
+                if shadow(dev, target, &d)? == Outcome::Cpu {
+                    compose::draw_box_shadow(target, &d)?;
+                }
+            }
+            GpuSceneOp::Gradient { rect, shape, stops } => {
+                let desc = GradientDesc {
+                    rect: *rect,
+                    shape: *shape,
+                    stops,
+                    clip: active_clip,
+                };
+                if gradient(dev, target, &desc)? == Outcome::Cpu {
+                    compose::draw_gradient(target, &desc)?;
+                }
+            }
+            GpuSceneOp::BlitRgba {
+                width,
+                height,
+                stride,
+                pixels,
+                desc,
+            } => {
+                let mut d = *desc;
+                d.clip = compose::merge_clip(active_clip, d.clip);
+                let frame = VideoFrame::Rgba {
+                    pixels,
+                    width: *width,
+                    height: *height,
+                    stride: *stride,
+                };
+                if blit(dev, target, &frame, &d)? == Outcome::Cpu {
+                    compose::draw_blit(target, &frame, &d)?;
+                }
+            }
+            GpuSceneOp::BlitNv12 { surface, desc } => {
+                let mut d = *desc;
+                d.clip = compose::merge_clip(active_clip, d.clip);
+                let frame = VideoFrame::from_nv12(surface);
+                if blit(dev, target, &frame, &d)? == Outcome::Cpu {
+                    compose::draw_blit(target, &frame, &d)?;
+                }
+            }
+            GpuSceneOp::BlitI420 { surface, desc } => {
+                let mut d = *desc;
+                d.clip = compose::merge_clip(active_clip, d.clip);
+                let frame = VideoFrame::from_i420(surface);
+                if blit(dev, target, &frame, &d)? == Outcome::Cpu {
+                    compose::draw_blit(target, &frame, &d)?;
+                }
+            }
+            GpuSceneOp::GlyphCoverage {
+                x,
+                y,
+                width,
+                height,
+                coverage,
+                color,
+            } => {
+                compose::draw_glyph_coverage(
+                    target,
+                    *x,
+                    *y,
+                    *width,
+                    *height,
+                    coverage,
+                    *color,
+                    active_clip,
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Helpers shared by the device backend tests.

@@ -1,18 +1,18 @@
 <div align="center">
   <h1>anvil-gpu</h1>
-  <p>Compositor passes: blurred shadows, gradients, video frame blits, and tile quads, on the CPU or a GPU.</p>
+  <p>Compositor passes and batched scene command buffers: blurred shadows, gradients, video frame blits, rounded SDF rects, glyph coverage, and tile quads, on the CPU or a GPU.</p>
   <p>
-    <img src="https://img.shields.io/badge/release-v.09-e8c37a?style=flat-square" alt="v.09" />
+    <img src="https://img.shields.io/badge/release-v.10-e8c37a?style=flat-square" alt="v.10" />
     <img src="https://img.shields.io/badge/status-Proof_of_Concept-d4a359?style=flat-square" alt="Proof of Concept" />
-    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MPL--2.0-blue?style=flat-square" alt="MPL-2.0" /></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-PolyForm_Noncommercial_1.0.0_%7C_Paid_Commercial_%28Non--Compete%29-blue?style=flat-square" alt="PolyForm Noncommercial 1.0.0 | Paid Commercial (Non-Compete)" /></a>
     <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-policy-2ea44f?style=flat-square" alt="Security" /></a>
     <img src="https://img.shields.io/badge/rust-2024-orange?style=flat-square" alt="Rust 2024" />
   </p>
 </div>
 
-Version 0.9.0. The last tagged release before v.09 was v.07. There was never a 0.8.0 release.
+Version 0.10.0 (`v.10`).
 
-Drawing for the compositor: blurred box shadows, linear and radial gradients, and video frame blits, plus the older tile quad drawing. The CPU passes are the reference. The same passes are written in GLSL and HLSL, and since 0.9.0 they run on a GPU when one is there and passes a self-test against the CPU. Every test in this repository gets the same bytes from the device as from the CPU on both Linux (Mesa llvmpipe, OpenGL 3.3 core) and Windows (Direct3D 11 hardware GPU). Proof of concept.
+Drawing for the compositor: batched scene command buffers (`GpuSceneBatch`, `GpuSceneOp`, `Compositor::execute_scene_batch`), blurred box shadows, linear and radial gradients, RGBA/NV12/I420 video and canvas frame blits (`Nv12Surface`, `I420Surface`), rounded SDF boxes, 8-bit glyph coverage compositing, plus the tile quad drawing (`GpuDevice`). The CPU passes are the reference. The shader passes are written in GLSL and HLSL, and run on a GPU when one is there and passes a self-test against the CPU. Every test in this repository gets the same bytes from the device as from the CPU on both Linux (Mesa llvmpipe, OpenGL 3.3 core) and Windows (Direct3D 11 hardware GPU). Proof of concept.
 
 ## What runs where
 
@@ -21,7 +21,7 @@ Drawing for the compositor: blurred box shadows, linear and radial gradients, an
 | Box shadow with blur | `draw_box_shadow` | runs (mask, six blur passes, paint) | runs (mask, six blur passes, paint) |
 | Linear and radial gradients, up to 16 stops | `draw_gradient` | runs | runs |
 | RGBA, NV12, and I420 frame blit with scaling | `draw_blit` | runs | runs |
-| Rounded boxes, borders, two-stop gradients, atlas quads | `render_frame_rgba`, `GpuDevice::render_quads` | CPU only | CPU only |
+| Rounded boxes, borders, two-stop gradients, atlas quads, and `GpuSceneBatch` clear/solid/rounded/glyph ops | `render_frame_rgba`, `GpuDevice::render_quads`, `Compositor::execute_scene_batch` | CPU only (shadow, gradient, and blit ops in `GpuSceneBatch` use the device) | CPU only (shadow, gradient, and blit ops in `GpuSceneBatch` use the device) |
 
 `Compositor::box_shadow`, `fill_gradient`, and `blit_frame` use the device when there is one, and the CPU otherwise. `Compositor::software()` always uses the CPU.
 
@@ -80,7 +80,7 @@ The probe is cached per process, not per machine. It now also makes a context, c
 - `GpuDevice::render_quads` counts the 16 by 16 tiles a quad touches, then shades the frame once. The bytes match `render_frame_rgba`.
 - `composite_rgba_frame`, `convert_rgba_on_device`, and `present_nv12_on_device` work as before and run on the CPU.
 - `sdf_rounded_box`, `sdf_box_shadow_alpha`, `sample_linear_gradient`, `sample_multi_stop_gradient`, and `sample_radial_gradient` are the shared math.
-- `TextureAtlas` packs rectangles and returns UV bounds. `Nv12Surface` converts RGBA to NV12 and back.
+- `TextureAtlas` packs rectangles and returns UV bounds. `Nv12Surface` and `I420Surface` convert RGBA to NV12/I420 and back.
 - `COMPOSITOR_GLSL`, `COMPOSITOR_HLSL`, `PASSES_GLSL`, and `PASSES_HLSL` are the shader sources.
 
 ## Unsafe code
@@ -112,20 +112,22 @@ Tests that need a device pass when there is none, so they do not fail on a machi
 
 ## The other repositories
 
-The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) (Apache-2.0). The page engine is [anvil-engine](https://github.com/buntatoes/anvil-engine). Its source is public to read and audit, but it's proprietary, not MPL-2.0, and can't be redistributed on its own. These nine libraries sit next to both, and all of them are MPL-2.0. None of them come from crates.io.
+The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) and the page engine is [anvil-engine](https://github.com/buntatoes/anvil-engine), built alongside the eleven companion libraries below. None of them come from crates.io.
 
 | Repository | What it is |
 | --- | --- |
 | [anvil-cipher](https://github.com/buntatoes/anvil-cipher) | AES-128, AES-256, CTR, AES-256-GCM, SHA-256, HMAC-SHA256, HKDF-SHA256 |
 | [anvil-compress](https://github.com/buntatoes/anvil-compress) | DEFLATE, zlib, gzip |
+| [anvil-css](https://github.com/buntatoes/anvil-css) | CSS Syntax Level 3 tokenizer, Selectors Level 4 matcher, 261-property value/calc parser, and media/@supports evaluator |
 | [anvil-hpack](https://github.com/buntatoes/anvil-hpack) | HPACK header compression for HTTP/2 |
-| [anvil-image](https://github.com/buntatoes/anvil-image) | PNG, JPEG, GIF, WebP (`VP8L`), ICO, BMP, PPM |
+| [anvil-image](https://github.com/buntatoes/anvil-image) | PNG, JPEG, GIF, WebP (`VP8L` + `VP8 `), ICO, BMP, PPM |
+| [anvil-js](https://github.com/buntatoes/anvil-js) | Self-hosted ES2022+ JavaScript compiler, lowering pass, standard library, and Web/DOM runtime |
 | [anvil-json](https://github.com/buntatoes/anvil-json) | JSON |
 | [anvil-pqc](https://github.com/buntatoes/anvil-pqc) | ML-KEM-768, X25519, X25519MLKEM768, SHA-3 |
 | [anvil-ttf](https://github.com/buntatoes/anvil-ttf) | TrueType and OpenType (`glyf`, `CFF `, `kern`, `GPOS`) |
-| [anvil-gpu](https://github.com/buntatoes/anvil-gpu) | Compositor passes for boxes, shadows, gradients, and NV12, on the CPU or a GPU |
-| [anvil-video](https://github.com/buntatoes/anvil-video) | CPU frames and PCM/ADPCM audio in a small MP4 container |
+| [anvil-gpu](https://github.com/buntatoes/anvil-gpu) | Compositor passes and batched scene command buffers for boxes, shadows, gradients, NV12, and I420 |
+| [anvil-video](https://github.com/buntatoes/anvil-video) | CPU frames (AVID/ADCT) and PCM/ADPCM/FLAC/MDCT audio in MP4, fMP4, and WebM containers |
 
 ## License
 
-MPL-2.0. Copyright (c) 2026 Buntato.
+Dual-licensed under the **PolyForm Noncommercial License 1.0.0** and a **Paid Commercial License with a Non-Compete Clause**. Copyright (c) 2026 Buntato. See [LICENSE](./LICENSE).
