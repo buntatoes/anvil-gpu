@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>anvil-gpu</h1>
+  <h1>Anvil GPU</h1>
   <p>Compositor passes and batched scene command buffers: blurred shadows, gradients, video frame blits, rounded SDF rects, glyph coverage, and tile quads, on the CPU or a GPU.</p>
   <p>
     <img src="https://img.shields.io/badge/release-v.10-e8c37a?style=flat-square" alt="v.10" />
