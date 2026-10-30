@@ -786,14 +786,40 @@ pub fn draw_gradient(
     target: &mut RgbaTarget<'_>,
     desc: &GradientDesc<'_>,
 ) -> Result<(), ComposeError> {
+    draw_rounded_gradient(target, desc, 0.0)
+}
+
+/// Fill a linear or radial gradient clipped to an SDF rounded box with `corner_radius`.
+pub fn draw_rounded_gradient(
+    target: &mut RgbaTarget<'_>,
+    desc: &GradientDesc<'_>,
+    corner_radius: f32,
+) -> Result<(), ComposeError> {
+    if !corner_radius.is_finite() || corner_radius < 0.0 {
+        return Err(ComposeError::BadInput);
+    }
     let Some((bounds, stops)) = plan_gradient(target, desc)? else {
         return Ok(());
     };
     let stops = stops.as_slice();
+    let corner = corner_radius.max(0.0);
+    let half_w = (desc.rect.width as f64 * 0.5) as f32;
+    let half_h = (desc.rect.height as f64 * 0.5) as f32;
+    let cx = (desc.rect.x as f64 + desc.rect.width as f64 * 0.5) as f32;
+    let cy = (desc.rect.y as f64 + desc.rect.height as f64 * 0.5) as f32;
     for y in bounds.y0..bounds.y1 {
         let py = y as f32 + 0.5;
         for x in bounds.x0..bounds.x1 {
             let px = x as f32 + 0.5;
+            let cov = if corner > 0.0 {
+                let d = sdf_rounded_box(px - cx, py - cy, half_w, half_h, corner);
+                (0.5 - d).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            if cov <= 0.0 {
+                continue;
+            }
             let color = match desc.shape {
                 GradientShape::Linear {
                     start_x,
@@ -813,7 +839,7 @@ pub fn draw_gradient(
                     center_x, center_y, radius_x, radius_y, px, py, stops,
                 ),
             };
-            over_straight(target.px_mut(x, y), color, 1.0);
+            over_straight(target.px_mut(x, y), color, cov);
         }
     }
     Ok(())
@@ -1401,6 +1427,13 @@ pub enum GpuSceneOp {
         shape: GradientShape,
         stops: Vec<GpuGradientStop>,
     },
+    /// Multi-stop linear or radial gradient with SDF rounded corners.
+    RoundedGradient {
+        rect: GpuRect,
+        shape: GradientShape,
+        corner_radius: f32,
+        stops: Vec<GpuGradientStop>,
+    },
     /// Scaled RGBA8 texture/canvas/image blit.
     BlitRgba {
         width: u32,
@@ -1528,6 +1561,22 @@ impl GpuSceneBatch {
         self.ops.push(GpuSceneOp::Gradient { rect, shape, stops });
     }
 
+    /// Append a multi-stop linear or radial gradient with SDF rounded corners.
+    pub fn push_rounded_gradient(
+        &mut self,
+        rect: GpuRect,
+        shape: GradientShape,
+        corner_radius: f32,
+        stops: Vec<GpuGradientStop>,
+    ) {
+        self.ops.push(GpuSceneOp::RoundedGradient {
+            rect,
+            shape,
+            corner_radius,
+            stops,
+        });
+    }
+
     /// Append a scaled RGBA8 image/canvas blit.
     pub fn push_blit_rgba(
         &mut self,
@@ -1626,6 +1675,45 @@ pub(crate) fn validate_scene_batch(batch: &GpuSceneBatch) -> Result<(), ComposeE
             }
             GpuSceneOp::Gradient { rect, shape, stops } => {
                 if !rect_is_valid(*rect) || Stops::new(stops).is_none() {
+                    return Err(ComposeError::BadInput);
+                }
+                let shape_ok = match *shape {
+                    GradientShape::Linear {
+                        start_x,
+                        start_y,
+                        end_x,
+                        end_y,
+                    } => [start_x, start_y, end_x, end_y]
+                        .iter()
+                        .all(|v| v.is_finite()),
+                    GradientShape::Radial {
+                        center_x,
+                        center_y,
+                        radius_x,
+                        radius_y,
+                    } => {
+                        [center_x, center_y, radius_x, radius_y]
+                            .iter()
+                            .all(|v| v.is_finite())
+                            && radius_x >= 0.0
+                            && radius_y >= 0.0
+                    }
+                };
+                if !shape_ok {
+                    return Err(ComposeError::BadInput);
+                }
+            }
+            GpuSceneOp::RoundedGradient {
+                rect,
+                shape,
+                corner_radius,
+                stops,
+            } => {
+                if !rect_is_valid(*rect)
+                    || !corner_radius.is_finite()
+                    || *corner_radius < 0.0
+                    || Stops::new(stops).is_none()
+                {
                     return Err(ComposeError::BadInput);
                 }
                 let shape_ok = match *shape {
@@ -1766,6 +1854,20 @@ pub fn draw_scene_batch(
                     clip: active_clip,
                 };
                 draw_gradient(target, &desc)?;
+            }
+            GpuSceneOp::RoundedGradient {
+                rect,
+                shape,
+                corner_radius,
+                stops,
+            } => {
+                let desc = GradientDesc {
+                    rect: *rect,
+                    shape: *shape,
+                    stops,
+                    clip: active_clip,
+                };
+                draw_rounded_gradient(target, &desc, *corner_radius)?;
             }
             GpuSceneOp::BlitRgba {
                 width,

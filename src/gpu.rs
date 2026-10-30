@@ -370,6 +370,19 @@ pub(crate) fn gradient(
     target: &mut RgbaTarget<'_>,
     desc: &GradientDesc<'_>,
 ) -> Result<Outcome, ComposeError> {
+    rounded_gradient(dev, target, desc, 0.0)
+}
+
+/// [`compose::draw_rounded_gradient`] on a device.
+pub(crate) fn rounded_gradient(
+    dev: &mut dyn PassDevice,
+    target: &mut RgbaTarget<'_>,
+    desc: &GradientDesc<'_>,
+    corner_radius: f32,
+) -> Result<Outcome, ComposeError> {
+    if !corner_radius.is_finite() || corner_radius < 0.0 {
+        return Err(ComposeError::BadInput);
+    }
     let Some((bounds, stops)) = compose::plan_gradient(target, desc)? else {
         return Ok(Outcome::Drawn);
     };
@@ -387,14 +400,22 @@ pub(crate) fn gradient(
             radius_y,
         } => [center_x, center_y, radius_x, radius_y],
     };
+    let half_w = (desc.rect.width as f64 * 0.5) as f32;
+    let half_h = (desc.rect.height as f64 * 0.5) as f32;
+    let cx = (desc.rect.x as f64 + desc.rect.width as f64 * 0.5) as f32;
+    let cy = (desc.rect.y as f64 + desc.rect.height as f64 * 0.5) as f32;
+    let shape = [cx, cy, half_w, half_h];
     if !fits(dev, bounds.width() as usize, bounds.height() as usize)
         || geometry.iter().any(|v| v.abs() > MAX_DEVICE_COORD)
+        || shape.iter().any(|v| v.abs() > MAX_DEVICE_COORD)
     {
         return Ok(Outcome::Cpu);
     }
     let stops = stops.as_slice();
     let mut params = PassParams {
         origin: [bounds.x0 as i32, bounds.y0 as i32],
+        shape,
+        corner: corner_radius.max(0.0),
         stop_count: stops.len() as i32,
         ..PassParams::default()
     };
@@ -557,6 +578,10 @@ pub(crate) fn self_test(dev: &mut dyn PassDevice) -> bool {
             };
             compose::draw_gradient(&mut soft, &desc)?;
             if gradient(dev, &mut hard, &desc)? != Outcome::Drawn {
+                return Ok(false);
+            }
+            compose::draw_rounded_gradient(&mut soft, &desc, 4.5)?;
+            if rounded_gradient(dev, &mut hard, &desc, 4.5)? != Outcome::Drawn {
                 return Ok(false);
             }
         }
@@ -774,6 +799,19 @@ impl<D: SharedDevice> ComposeBackend for DeviceBackend<D> {
         )
     }
 
+    fn fill_rounded_gradient(
+        &mut self,
+        target: &mut RgbaTarget<'_>,
+        desc: &GradientDesc<'_>,
+        corner_radius: f32,
+    ) -> Result<(), ComposeError> {
+        self.call(
+            target,
+            |d, t| rounded_gradient(d, t, desc, corner_radius),
+            |t| compose::draw_rounded_gradient(t, desc, corner_radius),
+        )
+    }
+
     fn blit_frame(
         &mut self,
         target: &mut RgbaTarget<'_>,
@@ -842,15 +880,41 @@ fn execute_batch_on_pass_device(
                 border_width,
                 border_color,
             } => {
-                compose::draw_solid_rect(
-                    target,
-                    *rect,
-                    *color,
-                    *corner_radius,
-                    *border_width,
-                    *border_color,
-                    active_clip,
-                )?;
+                if *border_width == 0.0 && *corner_radius > 0.0 {
+                    let single_stop = [GpuGradientStop::new(0.0, *color)];
+                    let desc = GradientDesc {
+                        rect: *rect,
+                        shape: GradientShape::Linear {
+                            start_x: rect.x,
+                            start_y: rect.y,
+                            end_x: rect.x + rect.width,
+                            end_y: rect.y + rect.height,
+                        },
+                        stops: &single_stop,
+                        clip: active_clip,
+                    };
+                    if rounded_gradient(dev, target, &desc, *corner_radius)? == Outcome::Cpu {
+                        compose::draw_solid_rect(
+                            target,
+                            *rect,
+                            *color,
+                            *corner_radius,
+                            *border_width,
+                            *border_color,
+                            active_clip,
+                        )?;
+                    }
+                } else {
+                    compose::draw_solid_rect(
+                        target,
+                        *rect,
+                        *color,
+                        *corner_radius,
+                        *border_width,
+                        *border_color,
+                        active_clip,
+                    )?;
+                }
             }
             GpuSceneOp::BoxShadow(desc) => {
                 let mut d = *desc;
@@ -868,6 +932,22 @@ fn execute_batch_on_pass_device(
                 };
                 if gradient(dev, target, &desc)? == Outcome::Cpu {
                     compose::draw_gradient(target, &desc)?;
+                }
+            }
+            GpuSceneOp::RoundedGradient {
+                rect,
+                shape,
+                corner_radius,
+                stops,
+            } => {
+                let desc = GradientDesc {
+                    rect: *rect,
+                    shape: *shape,
+                    stops,
+                    clip: active_clip,
+                };
+                if rounded_gradient(dev, target, &desc, *corner_radius)? == Outcome::Cpu {
+                    compose::draw_rounded_gradient(target, &desc, *corner_radius)?;
                 }
             }
             GpuSceneOp::BlitRgba {

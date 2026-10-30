@@ -2,7 +2,7 @@
   <h1>Anvil GPU</h1>
   <p>Compositor passes and batched scene command buffers: blurred shadows, gradients, video frame blits, rounded SDF rects, glyph coverage, and tile quads, on the CPU or a GPU.</p>
   <p>
-    <img src="https://img.shields.io/badge/release-v.10-e8c37a?style=flat-square" alt="v.10" />
+    <img src="https://img.shields.io/badge/release-v.11-e8c37a?style=flat-square" alt="v.11" />
     <img src="https://img.shields.io/badge/status-Proof_of_Concept-d4a359?style=flat-square" alt="Proof of Concept" />
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-PolyForm_Noncommercial_1.0.0_%7C_Paid_Commercial_%28Non--Compete%29-blue?style=flat-square" alt="PolyForm Noncommercial 1.0.0 | Paid Commercial (Non-Compete)" /></a>
     <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-policy-2ea44f?style=flat-square" alt="Security" /></a>
@@ -10,7 +10,7 @@
   </p>
 </div>
 
-Version 0.10.0 (`v.10`).
+Version 0.11.0 (`v.11`).
 
 Drawing for the compositor: batched scene command buffers (`GpuSceneBatch`, `GpuSceneOp`, `Compositor::execute_scene_batch`), blurred box shadows, linear and radial gradients, RGBA/NV12/I420 video and canvas frame blits (`Nv12Surface`, `I420Surface`), rounded SDF boxes, 8-bit glyph coverage compositing, plus the tile quad drawing (`GpuDevice`). The CPU passes are the reference. The shader passes are written in GLSL and HLSL, and run on a GPU when one is there and passes a self-test against the CPU. Every test in this repository gets the same bytes from the device as from the CPU on both Linux (Mesa llvmpipe, OpenGL 3.3 core) and Windows (Direct3D 11 hardware GPU). Proof of concept.
 
@@ -19,9 +19,9 @@ Drawing for the compositor: batched scene command buffers (`GpuSceneBatch`, `Gpu
 | Pass | CPU | Linux, OpenGL 3.3 core | Windows, Direct3D 11 |
 | --- | --- | --- | --- |
 | Box shadow with blur | `draw_box_shadow` | runs (mask, six blur passes, paint) | runs (mask, six blur passes, paint) |
-| Linear and radial gradients, up to 16 stops | `draw_gradient` | runs | runs |
+| Linear and radial gradients, up to 16 stops (including rounded-corner SDF gradients via `draw_rounded_gradient` / `fill_rounded_gradient` / `GpuSceneOp::RoundedGradient`) | `draw_gradient`, `draw_rounded_gradient` | runs | runs |
 | RGBA, NV12, and I420 frame blit with scaling | `draw_blit` | runs | runs |
-| Rounded boxes, borders, two-stop gradients, atlas quads, and `GpuSceneBatch` clear/solid/rounded/glyph ops | `render_frame_rgba`, `GpuDevice::render_quads`, `Compositor::execute_scene_batch` | CPU only (shadow, gradient, and blit ops in `GpuSceneBatch` use the device) | CPU only (shadow, gradient, and blit ops in `GpuSceneBatch` use the device) |
+| Rounded boxes (`border_width == 0.0` in `GpuSceneBatch`), borders, two-stop gradients, atlas quads, and `GpuSceneBatch` clear/solid/rounded/glyph ops | `render_frame_rgba`, `GpuDevice::render_quads`, `Compositor::execute_scene_batch` | Shadow, gradient, rounded gradient, rounded solid (`border_width == 0.0`), and blit ops in `GpuSceneBatch` use the device; bordered rects and glyph coverage run on CPU | Shadow, gradient, rounded gradient, rounded solid (`border_width == 0.0`), and blit ops in `GpuSceneBatch` use the device; bordered rects and glyph coverage run on CPU |
 
 `Compositor::box_shadow`, `fill_gradient`, and `blit_frame` use the device when there is one, and the CPU otherwise. `Compositor::software()` always uses the CPU.
 

@@ -53,7 +53,8 @@ pub use compose::{
     BlitDesc, Bounds, ComposeError, Filter, GpuSceneBatch, GpuSceneOp, GradientDesc, GradientShape,
     MAX_BLUR_RADIUS, MAX_GRADIENT_STOPS, MAX_SIDE, RgbaTarget, ShadowDesc, VideoFrame,
     bt709_yuv_f32_to_rgb, draw_blit, draw_box_shadow, draw_glyph_coverage, draw_gradient,
-    draw_scene_batch, draw_solid_rect, linear_gradient_t, over_straight, shadow_pass_radius,
+    draw_rounded_gradient, draw_scene_batch, draw_solid_rect, linear_gradient_t, over_straight,
+    shadow_pass_radius,
 };
 pub use device::{
     GpuBackend, GpuDevice, composite_rgba_frame, convert_rgba_on_device, device_converts,

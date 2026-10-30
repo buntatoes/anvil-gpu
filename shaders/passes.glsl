@@ -219,6 +219,8 @@ void main()
 #ifdef PASS_GRADIENT
 const int MAX_STOPS = 16;
 uniform sampler2D uDest;
+uniform vec4 uShape;
+uniform float uCorner;
 // 0: linear from uGeometry.xy to uGeometry.zw.
 // 1: radial, center uGeometry.xy, radii uGeometry.zw.
 uniform int uKind;
@@ -263,6 +265,12 @@ void main()
 {
     ivec2 p = RegionPixel();
     vec2 c = TargetCenter();
+    float cov = 1.0;
+    if (uCorner > 0.0)
+    {
+        float dShape = SdfRoundedBox(c - uShape.xy, uShape.zw, uCorner);
+        cov = clamp(0.5 - dShape, 0.0, 1.0);
+    }
     float t;
     if (uKind == 0)
     {
@@ -280,7 +288,7 @@ void main()
         t = clamp(IeeeSqrt(n.x * n.x + n.y * n.y), 0.0, 1.0);
     }
     vec4 dst = floor(texelFetch(uDest, p, 0) * 255.0 + 0.5);
-    FragColor = OverStraight(dst, SampleStops(t), 1.0) / 255.0;
+    FragColor = OverStraight(dst, SampleStops(t), cov) / 255.0;
 }
 #endif
 

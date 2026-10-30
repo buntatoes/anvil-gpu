@@ -260,6 +260,13 @@ float4 PSGradient(float4 pos : SV_Position) : SV_Target
 {
     int2 p = int2(pos.xy);
     precise float2 c = TargetCenter(p);
+    precise float cov = 1.0;
+    if (Corner > 0.0)
+    {
+        precise float2 relShape = c - Shape.xy;
+        precise float dShape = SdfRoundedBox(relShape, Shape.zw, Corner);
+        cov = saturate(0.5 - dShape);
+    }
     precise float t;
     if (Kind == 0)
     {
@@ -276,7 +283,7 @@ float4 PSGradient(float4 pos : SV_Position) : SV_Target
         precise float2 n = IeeeDiv2(c - Geometry.xy, max(Geometry.zw, float2(0.5, 0.5)));
         t = saturate(IeeeSqrt(n.x * n.x + n.y * n.y));
     }
-    return OverStraight(LoadDest(p), SampleStops(t), 1.0) / 255.0;
+    return OverStraight(LoadDest(p), SampleStops(t), cov) / 255.0;
 }
 
 // Nearest texel along one axis, integer math as in nearest_index.

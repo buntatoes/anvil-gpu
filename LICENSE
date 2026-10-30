@@ -8,8 +8,8 @@ PART I: DUAL LICENSING & NON-COMPETE TERMS
 
 This software and all associated source code, shaders, scripts, build tooling,
 and documentation in the Anvil Browser ecosystem (`anvil-browser`,
-`anvil-engine`, `anvil-cipher`, `anvil-compress`, `anvil-css`, `anvil-gpu`,
-`anvil-hpack`, `anvil-image`, `anvil-js`, `anvil-json`, `anvil-pqc`,
+`anvil-engine` / Forge, `Cinder`, `Prism`, `anvil-cipher`, `anvil-compress`,
+`anvil-gpu`, `anvil-hpack`, `anvil-image`, `anvil-json`, `anvil-pqc`,
 `anvil-ttf`, and `anvil-video`) are copyright (c) 2026 Buntato and are made
 available under a Dual License model:
 
@@ -49,11 +49,11 @@ available under a Dual License model:
        or distributed as a competing engine component.
 
 4. TRADEMARKS & AUTHORSHIP:
-   The names "Anvil", "Anvil Browser", "Anvil Engine", "AnvilVM", and associated
-   logos/marks are the exclusive property of Buntato and are not licensed for
-   use on any third-party or derivative product. All copies and permitted
-   distributions must retain the copyright notice "Copyright (c) 2026 Buntato"
-   and a complete copy of this LICENSE file.
+   The names "Anvil", "Anvil Browser", "Forge", "Cinder", "Prism", and
+   associated logos/marks are the exclusive property of Buntato and are not
+   licensed for use on any third-party or derivative product. All copies and
+   permitted distributions must retain the copyright notice "Copyright (c) 2026
+   Buntato" and a complete copy of this LICENSE file.
 
 ================================================================================
 PART II: POLYFORM NONCOMMERCIAL LICENSE 1.0.0
@@ -172,3 +172,53 @@ otherwise. Control can be direct or indirect.
 these terms.
 
 **Use** means anything you do with the software requiring one of your licenses.
+
+================================================================================
+PART III: THIRD-PARTY OPEN-SOURCE COMPONENT NOTICE (adblock-rust, MPL-2.0)
+================================================================================
+
+`anvil-browser` (`crates/anvil-net` and `crates/anvil-browser`) links Brave
+Browser's unmodified open-source `adblock-rust` library (`adblock` v0.13.3):
+
+  Component:  adblock-rust (`adblock` crate)
+  Source:     https://github.com/brave/adblock-rust
+  Copyright:  Copyright (c) Brave Software, Inc. and contributors
+  License:    Mozilla Public License 2.0 (MPL-2.0)
+              https://mozilla.org/MPL/2.0/
+
+In accordance with Section 3.3 of the Mozilla Public License 2.0 ("Distribution
+of a Larger Work"), `adblock-rust` is linked without modification and remains
+licensed under the Mozilla Public License 2.0 (MPL-2.0), with its complete
+corresponding source code available at https://github.com/brave/adblock-rust.
+All original Anvil Browser source code, `anvil-engine` (Forge), `Cinder`,
+`Prism`, and the nine `anvil-*` companion libraries remain governed by Part I
+and Part II of this Anvil Ecosystem Dual License.
+
+================================================================================
+PART IV: OPEN MEDIA SPECIFICATION & ROYALTY-FREE PATENT GRANT NOTICE
+================================================================================
+
+`anvil-video`, `anvil-engine` (Forge), and `anvil-browser` include 100%
+original, clean-room Rust encoders, decoders, and bitstream parsers written
+from scratch by Buntato for the following open, royalty-free media standards
+(with zero third-party `libopus`, `libvpx`, `dav1d`, or `libaom` source code):
+
+1. AV1 (Alliance for Open Media AV1 Bitstream & Decoding Process Specification):
+   Specification: https://aomedia.org/av1/specification/
+   Patent Grant:  Alliance for Open Media (AOMedia) Patent License 1.0
+                  https://aomedia.org/license/patent-license/
+
+2. VP8 & VP9 (IETF RFC 6386 & WebM Project VP9 Bitstream Specification):
+   Specification: https://datatracker.ietf.org/doc/html/rfc6386
+                  https://www.webmproject.org/vp9/
+   Patent Grant:  WebM Project Additional IP Rights Grant (Patent License)
+                  https://www.webmproject.org/license/additional/
+
+3. Opus Interactive Audio Codec (IETF RFC 6716):
+   Specification: https://datatracker.ietf.org/doc/html/rfc6716
+   Patent Grant:  Opus Royalty-Free Patent License Terms
+                  https://opus-codec.org/license/
+
+All implementation source code in `anvil-video`, `anvil-engine` (Forge), and
+`anvil-browser` remains 100% copyright (c) 2026 Buntato and governed by Part I
+and Part II of this Anvil Ecosystem Dual License.

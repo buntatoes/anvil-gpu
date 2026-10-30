@@ -48,6 +48,14 @@ pub trait ComposeBackend {
         target: &mut RgbaTarget<'_>,
         desc: &GradientDesc<'_>,
     ) -> Result<(), ComposeError>;
+    fn fill_rounded_gradient(
+        &mut self,
+        target: &mut RgbaTarget<'_>,
+        desc: &GradientDesc<'_>,
+        corner_radius: f32,
+    ) -> Result<(), ComposeError> {
+        compose::draw_rounded_gradient(target, desc, corner_radius)
+    }
     fn blit_frame(
         &mut self,
         target: &mut RgbaTarget<'_>,
@@ -351,6 +359,24 @@ impl Compositor {
             return Ok(());
         };
         self.run(target, bounds, |b, t| b.fill_gradient(t, desc))
+    }
+
+    /// Fill a linear or radial gradient clipped to an SDF rounded rectangle.
+    pub fn fill_rounded_gradient(
+        &mut self,
+        target: &mut RgbaTarget<'_>,
+        desc: &GradientDesc<'_>,
+        corner_radius: f32,
+    ) -> Result<(), ComposeError> {
+        if !corner_radius.is_finite() || corner_radius < 0.0 {
+            return Err(ComposeError::BadInput);
+        }
+        let Some(bounds) = compose::gradient_bounds(target, desc)? else {
+            return Ok(());
+        };
+        self.run(target, bounds, |b, t| {
+            b.fill_rounded_gradient(t, desc, corner_radius)
+        })
     }
 
     /// Scale, convert, and copy a video frame.

@@ -256,6 +256,7 @@ pub(crate) struct D3dDevice {
     context: Com,
     rasterizer: Com,
     constants: Com,
+    staging_cache: std::sync::Mutex<Option<(u32, u32, Com)>>,
 }
 
 type CreateDeviceFn = unsafe extern "system" fn(
@@ -422,6 +423,7 @@ impl D3dDevice {
             context,
             rasterizer,
             constants,
+            staging_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -644,31 +646,40 @@ impl D3dDevice {
         if tex.format != TexFormat::Rgba8 || out.len() != row * tex.height as usize {
             return Err(D3dError("read size or format does not match"));
         }
-        let desc = Texture2dDesc {
-            width: tex.width,
-            height: tex.height,
-            mip_levels: 1,
-            array_size: 1,
-            format: dxgi_format(TexFormat::Rgba8),
-            sample: SampleDesc {
-                count: 1,
-                quality: 0,
-            },
-            usage: USAGE_STAGING,
-            bind_flags: 0,
-            cpu_access: CPU_ACCESS_READ,
-            misc_flags: 0,
+        let mut cache = self.staging_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let need_create = match cache.as_ref() {
+            Some((w, h, _)) => *w != tex.width || *h != tex.height,
+            None => true,
         };
-        let mut made: Obj = null_mut();
-        // SAFETY: slot 5 is CreateTexture2D, with a valid description and no
-        // initial data.
-        let staging = unsafe {
-            let f = self
-                .device
-                .method::<CreateTexture2dFn>(DEV_CREATE_TEXTURE2D)?;
-            let hr = f(self.device.raw(), &desc, null(), &mut made);
-            created(hr, made, "CreateTexture2D (staging) failed")?
-        };
+        if need_create {
+            let desc = Texture2dDesc {
+                width: tex.width,
+                height: tex.height,
+                mip_levels: 1,
+                array_size: 1,
+                format: dxgi_format(TexFormat::Rgba8),
+                sample: SampleDesc {
+                    count: 1,
+                    quality: 0,
+                },
+                usage: USAGE_STAGING,
+                bind_flags: 0,
+                cpu_access: CPU_ACCESS_READ,
+                misc_flags: 0,
+            };
+            let mut made: Obj = null_mut();
+            // SAFETY: slot 5 is CreateTexture2D, with a valid description and no
+            // initial data.
+            let staging = unsafe {
+                let f = self
+                    .device
+                    .method::<CreateTexture2dFn>(DEV_CREATE_TEXTURE2D)?;
+                let hr = f(self.device.raw(), &desc, null(), &mut made);
+                created(hr, made, "CreateTexture2D (staging) failed")?
+            };
+            *cache = Some((tex.width, tex.height, staging));
+        }
+        let staging = &cache.as_ref().ok_or(D3dError("staging cache empty"))?.2;
         let ctx = &self.context;
         let mut mapped = MappedSubresource {
             data: null_mut(),
