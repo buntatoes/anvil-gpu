@@ -1,6 +1,6 @@
 Anvil Ecosystem Dual License: PolyForm Noncommercial 1.0.0 OR Paid Commercial License (with Non-Compete Clause)
 SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0-OR-Commercial
-Copyright (c) 2026 Buntato <324143321+buntatoes@users.noreply.github.com>
+Copyright (c) 2026 Buntato
 
 ================================================================================
 PART I: DUAL LICENSING & NON-COMPETE TERMS
@@ -27,7 +27,7 @@ available under a Dual License model:
    requires a separate, active Paid Commercial License agreement executed in
    writing with the sole author and copyright holder:
 
-   Licensor: Buntato <324143321+buntatoes@users.noreply.github.com>
+   Licensor: Buntato
    Repository: https://github.com/buntatoes
 
    Without a signed Paid Commercial License from Buntato, all commercial uses
@@ -87,7 +87,7 @@ you also gets a copy of these terms or the URL for them above, as well as
 copies of any plain-text lines beginning with `Required Notice:` that the
 licensor provided with the software. For example:
 
-  Required Notice: Copyright (c) 2026 Buntato <324143321+buntatoes@users.noreply.github.com>
+  Required Notice: Copyright (c) 2026 Buntato
 
 Changes and New Works License
 -----------------------------
