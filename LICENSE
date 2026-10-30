@@ -195,32 +195,3 @@ corresponding source code available at https://github.com/brave/adblock-rust.
 All original Anvil Browser source code, `anvil-engine` (Forge), `Cinder`,
 `Prism`, and the nine `anvil-*` companion libraries remain governed by Part I
 and Part II of this Anvil Ecosystem Dual License.
-
-================================================================================
-PART IV: OPEN MEDIA SPECIFICATION & ROYALTY-FREE PATENT GRANT NOTICE
-================================================================================
-
-`anvil-video`, `anvil-engine` (Forge), and `anvil-browser` include 100%
-original, clean-room Rust encoders, decoders, and bitstream parsers written
-from scratch by Buntato for the following open, royalty-free media standards
-(with zero third-party `libopus`, `libvpx`, `dav1d`, or `libaom` source code):
-
-1. AV1 (Alliance for Open Media AV1 Bitstream & Decoding Process Specification):
-   Specification: https://aomedia.org/av1/specification/
-   Patent Grant:  Alliance for Open Media (AOMedia) Patent License 1.0
-                  https://aomedia.org/license/patent-license/
-
-2. VP8 & VP9 (IETF RFC 6386 & WebM Project VP9 Bitstream Specification):
-   Specification: https://datatracker.ietf.org/doc/html/rfc6386
-                  https://www.webmproject.org/vp9/
-   Patent Grant:  WebM Project Additional IP Rights Grant (Patent License)
-                  https://www.webmproject.org/license/additional/
-
-3. Opus Interactive Audio Codec (IETF RFC 6716):
-   Specification: https://datatracker.ietf.org/doc/html/rfc6716
-   Patent Grant:  Opus Royalty-Free Patent License Terms
-                  https://opus-codec.org/license/
-
-All implementation source code in `anvil-video`, `anvil-engine` (Forge), and
-`anvil-browser` remains 100% copyright (c) 2026 Buntato and governed by Part I
-and Part II of this Anvil Ecosystem Dual License.
