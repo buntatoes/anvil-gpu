@@ -1,4 +1,4 @@
-Anvil Ecosystem Dual License: PolyForm Noncommercial 1.0.0 OR Paid Commercial License (with Non-Compete Clause)
+Anvil Ecosystem Dual License: Noncommercial License (based on PolyForm Noncommercial 1.0.0) OR Paid Commercial License (with Non-Compete Clause)
 SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0-OR-Commercial
 Copyright (c) 2026 Buntato
 
@@ -13,13 +13,13 @@ and documentation in the Anvil Browser ecosystem (`anvil-browser`,
 `anvil-ttf`, and `anvil-video`) are copyright (c) 2026 Buntato and are made
 available under a Dual License model:
 
-1. NONCOMMERCIAL USE (PolyForm Noncommercial License 1.0.0):
+1. NONCOMMERCIAL USE (based on PolyForm Noncommercial License 1.0.0):
    You may read, audit, build, modify, and use this software free of charge
    strictly for noncommercial purposes (such as personal use, academic research,
    educational study, security auditing, or qualifying nonprofit activity) under
-   the terms of the PolyForm Noncommercial License 1.0.0 set forth in Part II
-   below, subject at all times to the Non-Compete Clause in Section 3 of this
-   Part I.
+   the noncommercial terms set forth in Part II below, which are based on the
+   PolyForm Noncommercial License 1.0.0, subject at all times to the
+   Non-Compete Clause in Section 3 of this Part I.
 
 2. PAID COMMERCIAL LICENSE:
    Any use of this software, in whole or in part, for commercial, for-profit,
@@ -56,10 +56,12 @@ available under a Dual License model:
    Buntato" and a complete copy of this LICENSE file.
 
 ================================================================================
-PART II: POLYFORM NONCOMMERCIAL LICENSE 1.0.0
+PART II: NONCOMMERCIAL TERMS (BASED ON POLYFORM NONCOMMERCIAL LICENSE 1.0.0)
 ================================================================================
 
-https://polyformproject.org/licenses/noncommercial/1.0.0
+These terms are based on the PolyForm Noncommercial License 1.0.0
+(https://polyformproject.org/licenses/noncommercial/1.0.0), with the
+Non-Compete Clause in Part I added. They are not the unmodified PolyForm text.
 
 Acceptance
 ----------
@@ -102,8 +104,8 @@ infringe by using the software.
 
 Noncommercial Purposes Only
 ---------------------------
-Any noncommercial purpose is a permitted purpose under this PolyForm
-Noncommercial License 1.0.0, subject to the Non-Compete Clause in Part I.
+Any noncommercial purpose is a permitted purpose under these terms, subject to
+the Non-Compete Clause in Part I.
 
 Personal Uses
 -------------
