@@ -1,3 +1,5 @@
-/target
-Cargo.lock
-.vs
+/anvil-gpu
+/anvil-gpu.exe
+*.exe
+*.out
+*.test
