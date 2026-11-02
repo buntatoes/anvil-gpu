@@ -4,11 +4,15 @@
   <p>
     <img src="https://img.shields.io/badge/release-v.12-e8c37a?style=flat-square" alt="v.12" />
     <img src="https://img.shields.io/badge/status-Proof_of_Concept-d4a359?style=flat-square" alt="Proof of Concept" />
-    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Noncommercial_%28based_on_PolyForm_1.0.0%29_%7C_Paid_Commercial_%28Non--Compete%29-blue?style=flat-square" alt="Noncommercial (based on PolyForm 1.0.0) | Paid Commercial (Non-Compete)" /></a>
+    <img src="https://img.shields.io/badge/archive-Frozen_in_Time-8b949e?style=flat-square" alt="Archived and Frozen in Time" />
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="Apache-2.0" /></a>
     <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-policy-2ea44f?style=flat-square" alt="Security" /></a>
     <img src="https://img.shields.io/badge/go-1.22%2B-00ADD8?style=flat-square" alt="Go 1.22+" />
   </p>
 </div>
+
+> [!IMPORTANT]
+> **Archived & Frozen in Time**: This standalone repository is archived and frozen in time as a historical snapshot. Active development now lives in-tree inside [buntatoes/anvil-browser](https://github.com/buntatoes/anvil-browser) under `engines/go/anvil-gpu`.
 
 Version 0.12.0 (`v.12`).
 
@@ -16,7 +20,7 @@ This is the 2D compositor, scene batch, texture atlas, and BT.709 video surface 
 
 ## How the engine and browser use it
 
-- `anvil-engine` (`Forge`) calls `Compositor` and `GpuSceneBatch` for box shadows, linear/radial/rounded gradients, solid and bordered SDF rounded boxes, glyph coverage blits, and `GpuDevice` 16x16 tiled quad rasterization.
+- `anvil-forge` (`Forge`) calls `Compositor` and `GpuSceneBatch` for box shadows, linear/radial/rounded gradients, solid and bordered SDF rounded boxes, glyph coverage blits, and `GpuDevice` 16x16 tiled quad rasterization.
 - `anvil-video` calls `Compositor` (`DrawBlit`) for scaled RGBA, NV12, and I420 frame blits and `Nv12Surface` / `I420Surface` for limited-range BT.709 color conversion.
 
 ## What it does
@@ -43,7 +47,7 @@ Go 1.22 or newer (`CGO_ENABLED=0`). Zero external Go module dependencies.
 
 ## The other repositories
 
-The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) and the page engine is [anvil-engine](https://github.com/buntatoes/anvil-engine), built alongside the nine companion libraries below.
+The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) and the page engine is [anvil-forge](https://github.com/buntatoes/anvil-forge), built alongside the nine companion libraries below.
 
 | Repository | What it is |
 | --- | --- |
@@ -59,4 +63,4 @@ The browser is [anvil-browser](https://github.com/buntatoes/anvil-browser) and t
 
 ## License
 
-Dual-licensed under **noncommercial terms based on the PolyForm Noncommercial License 1.0.0** and a **Paid Commercial License with a Non-Compete Clause**. Copyright (c) 2026 Buntato. See [LICENSE](./LICENSE).
+Licensed under the **Apache License, Version 2.0** (`Apache-2.0`). Copyright (c) 2026 Buntato. Pursuant to Section 6 of the Apache License 2.0, the names **"Anvil"**, **"Anvil Browser"**, **"Anvil Forge"** (**"Forge"**), **"Cinder"**, **"Prism"**, and the Anvil brand logo/emblem are copyrighted and trademarked by **Buntato** (*All Rights Reserved*) and may not be used to brand derivative works without written permission. See [LICENSE](./LICENSE).
