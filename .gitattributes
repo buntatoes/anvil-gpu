@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0-OR-Commercial
+# Copyright (c) 2026 Buntato
+# GitHub Linguist language classification
+
+*.go linguist-language=Go linguist-detectable=true linguist-vendored=false linguist-generated=false
+go.mod linguist-language=Go linguist-detectable=true
